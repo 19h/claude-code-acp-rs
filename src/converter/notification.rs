@@ -29,8 +29,9 @@ static BACKTICK_REGEX: std::sync::LazyLock<Regex> =
 
 /// Static regex for removing SYSTEM_REMINDER blocks
 /// Matches <system-reminder>...</system-reminder> including multiline content
-static SYSTEM_REMINDER_REGEX: std::sync::LazyLock<Regex> =
-    std::sync::LazyLock::new(|| Regex::new(r"(?s)<system-reminder>.*?</system-reminder>").expect("valid system-reminder regex"));
+static SYSTEM_REMINDER_REGEX: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+    Regex::new(r"(?s)<system-reminder>.*?</system-reminder>").expect("valid system-reminder regex")
+});
 
 /// Wrap text in markdown code block with appropriate number of backticks
 ///
@@ -268,10 +269,7 @@ impl NotificationConverter {
                     if let Some(block_type) = content_block.get("type").and_then(|v| v.as_str()) {
                         // Handle tool_use types
                         // Reference: vendors/claude-code-acp/src/acp-agent.ts lines 1047-1049
-                        if matches!(
-                            block_type,
-                            "tool_use" | "server_tool_use" | "mcp_tool_use"
-                        ) {
+                        if matches!(block_type, "tool_use" | "server_tool_use" | "mcp_tool_use") {
                             match serde_json::from_value::<ToolUseBlock>(content_block.clone()) {
                                 Ok(tool_use) => {
                                     self.cache_tool_use(&tool_use);
@@ -386,7 +384,9 @@ impl NotificationConverter {
                                 if let Some(thinking) =
                                     delta.get("thinking").and_then(|v| v.as_str())
                                 {
-                                    return vec![self.make_agent_thought_chunk(session_id, thinking)];
+                                    return vec![
+                                        self.make_agent_thought_chunk(session_id, thinking),
+                                    ];
                                 }
                             }
                             // Skip known delta types that don't need notifications
@@ -413,8 +413,9 @@ impl NotificationConverter {
                 vec![]
             }
             // No content needed for these events
-            Some("content_block_stop" | "message_start" | "message_delta" |
-"message_stop") => vec![],
+            Some("content_block_stop" | "message_start" | "message_delta" | "message_stop") => {
+                vec![]
+            }
             // Log unknown event types (like TS's unreachable)
             Some(unknown_type) => {
                 tracing::warn!(
@@ -533,9 +534,7 @@ impl NotificationConverter {
         image: &ImageBlock,
     ) -> SessionNotification {
         let (data, mime_type, uri) = match &image.source {
-            ImageSource::Base64 { media_type, data } => {
-                (data.clone(), media_type.clone(), None)
-            }
+            ImageSource::Base64 { media_type, data } => (data.clone(), media_type.clone(), None),
             ImageSource::Url { url } => {
                 // For URL-based images, data is empty and uri is set
                 (String::new(), String::new(), Some(url.clone()))
@@ -587,9 +586,15 @@ impl NotificationConverter {
             match (description, command) {
                 (Some(desc), _) => desc.to_string(),
                 (None, Some(cmd)) => {
-                    // Truncate long commands for display
+                    // Truncate long commands for display (UTF-8 safe)
                     if cmd.len() > 80 {
-                        format!("{}...", &cmd[..77])
+                        let boundary = cmd
+                            .char_indices()
+                            .map(|(i, _)| i)
+                            .take_while(|&i| i <= 77)
+                            .last()
+                            .unwrap_or(0);
+                        format!("{}...", &cmd[..boundary])
                     } else {
                         cmd.to_string()
                     }
@@ -631,7 +636,8 @@ impl NotificationConverter {
             tool_call = tool_call.locations(acp_locations);
         }
 
-        let notification = SessionNotification::new(session_id.clone(), SessionUpdate::ToolCall(tool_call));
+        let notification =
+            SessionNotification::new(session_id.clone(), SessionUpdate::ToolCall(tool_call));
         self.attach_request_id(notification)
     }
 
@@ -696,10 +702,8 @@ impl NotificationConverter {
             .raw_output(raw_output);
         let update = ToolCallUpdate::new(tool_call_id, update_fields);
 
-        let notification = SessionNotification::new(
-            session_id.clone(),
-            SessionUpdate::ToolCallUpdate(update),
-        );
+        let notification =
+            SessionNotification::new(session_id.clone(), SessionUpdate::ToolCallUpdate(update));
         let notifications = vec![self.attach_request_id(notification)];
 
         // Note: Plan notification for TodoWrite is now sent at tool_use time
@@ -746,10 +750,7 @@ impl NotificationConverter {
         }
 
         let plan = Plan::new(plan_entries);
-        let notification = SessionNotification::new(
-            session_id.clone(),
-            SessionUpdate::Plan(plan),
-        );
+        let notification = SessionNotification::new(session_id.clone(), SessionUpdate::Plan(plan));
         Some(self.attach_request_id(notification))
     }
 
@@ -766,10 +767,7 @@ impl NotificationConverter {
         is_error: bool,
     ) -> Vec<ToolCallContent> {
         // Strip mcp__acp__ prefix for matching
-        let effective_name = entry
-            .name
-            .strip_prefix("mcp__acp__")
-            .unwrap_or(&entry.name);
+        let effective_name = entry.name.strip_prefix("mcp__acp__").unwrap_or(&entry.name);
 
         match effective_name {
             "Edit" if !is_error => {
@@ -886,7 +884,8 @@ impl NotificationConverter {
             .content(vec![terminal_content]);
         let update = ToolCallUpdate::new(tool_call_id, update_fields);
 
-        let notification = SessionNotification::new(session_id.clone(), SessionUpdate::ToolCallUpdate(update));
+        let notification =
+            SessionNotification::new(session_id.clone(), SessionUpdate::ToolCallUpdate(update));
         self.attach_request_id(notification)
     }
 }
@@ -1154,10 +1153,7 @@ mod tests {
         let notification = converter.make_agent_message_chunk(&session_id, "test");
         assert!(notification.meta.is_some());
         if let Some(meta) = &notification.meta {
-            assert_eq!(
-                meta.get("request_id"),
-                Some(&serde_json::json!("req-123"))
-            );
+            assert_eq!(meta.get("request_id"), Some(&serde_json::json!("req-123")));
         }
     }
 
@@ -1190,11 +1186,14 @@ mod tests {
         let notifications = vec![
             converter.make_agent_message_chunk(&session_id, "test"),
             converter.make_agent_thought_chunk(&session_id, "thinking"),
-            converter.make_tool_call(&session_id, &ToolUseBlock {
-                id: "tool-1".to_string(),
-                name: "TestTool".to_string(),
-                input: serde_json::json!({}),
-            }),
+            converter.make_tool_call(
+                &session_id,
+                &ToolUseBlock {
+                    id: "tool-1".to_string(),
+                    name: "TestTool".to_string(),
+                    input: serde_json::json!({}),
+                },
+            ),
         ];
 
         for notification in notifications {

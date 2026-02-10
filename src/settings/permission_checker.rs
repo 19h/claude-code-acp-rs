@@ -447,7 +447,8 @@ mod tests {
         let mut checker = PermissionChecker::new(Settings::default(), "/tmp");
 
         // Add rule for specific bash command (find)
-        checker.add_allow_rule_for_tool_call("Bash", &json!({"command": "find /path1 -name '*.rs'"}));
+        checker
+            .add_allow_rule_for_tool_call("Bash", &json!({"command": "find /path1 -name '*.rs'"}));
 
         // Should allow ANY find command (same command name)
         assert_eq!(
@@ -553,10 +554,7 @@ mod tests {
             PermissionChecker::extract_command_name("find /path -name '*.rs'"),
             "find"
         );
-        assert_eq!(
-            PermissionChecker::extract_command_name("ls -la /tmp"),
-            "ls"
-        );
+        assert_eq!(PermissionChecker::extract_command_name("ls -la /tmp"), "ls");
         assert_eq!(PermissionChecker::extract_command_name("npm"), "npm");
         assert_eq!(PermissionChecker::extract_command_name(""), "");
         // Full path commands should return just the basename

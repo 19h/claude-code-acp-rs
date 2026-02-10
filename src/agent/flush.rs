@@ -165,7 +165,9 @@ async fn flush_with_native(
 async fn fallback_sleep(notification_count: u64) {
     // Use saturating_add to prevent overflow when notification_count is very large
     // This ensures we never panic even in edge cases
-    let wait_ms = 10u64.saturating_add(notification_count.saturating_mul(2)).min(100);
+    let wait_ms = 10u64
+        .saturating_add(notification_count.saturating_mul(2))
+        .min(100);
     tokio::time::sleep(tokio::time::Duration::from_millis(wait_ms)).await;
 }
 
@@ -194,11 +196,11 @@ mod tests {
     fn test_fallback_sleep_calculation() {
         // Test the sleep duration calculation logic
         let test_cases = vec![
-            (0u64, 10u64),     // Minimum 10ms
-            (1u64, 12u64),     // 10 + 2*1 = 12ms
-            (10u64, 30u64),    // 10 + 2*10 = 30ms
-            (45u64, 100u64),   // 10 + 2*45 = 100ms (capped at max)
-            (100u64, 100u64),  // Capped at 100ms
+            (0u64, 10u64),    // Minimum 10ms
+            (1u64, 12u64),    // 10 + 2*1 = 12ms
+            (10u64, 30u64),   // 10 + 2*10 = 30ms
+            (45u64, 100u64),  // 10 + 2*45 = 100ms (capped at max)
+            (100u64, 100u64), // Capped at 100ms
         ];
 
         for (count, expected) in test_cases {
@@ -235,7 +237,10 @@ mod tests {
         assert_eq!(format!("{}", err), "Transport error: test error");
 
         let err = FlushError::NotSupported;
-        assert_eq!(format!("{}", err), "Flush not supported by this sacp version");
+        assert_eq!(
+            format!("{}", err),
+            "Flush not supported by this sacp version"
+        );
 
         let err = FlushError::Timeout;
         assert_eq!(format!("{}", err), "Flush timed out");

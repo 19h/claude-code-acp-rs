@@ -5,8 +5,8 @@
 //! a time per session, and automatically cancels old prompts when new ones arrive.
 
 use dashmap::DashMap;
-use tokio::task::JoinHandle;
 use std::time::Instant;
+use tokio::task::JoinHandle;
 
 /// Prompt task identifier
 pub type PromptId = String;
@@ -65,7 +65,7 @@ impl PromptManager {
     /// Returns `true` if an old prompt was cancelled, `false` if there was
     /// no active prompt for this session.
     pub async fn cancel_session_prompt(&self, session_id: &str) -> bool {
-        use tokio::time::{timeout, Duration};
+        use tokio::time::{Duration, timeout};
 
         const CANCEL_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -194,11 +194,7 @@ mod tests {
             // Task that does nothing
         });
 
-        let prompt_id = manager.register_prompt(
-            "test-session".to_string(),
-            handle,
-            cancel_token,
-        );
+        let prompt_id = manager.register_prompt("test-session".to_string(), handle, cancel_token);
 
         assert!(prompt_id.starts_with("test-session-"));
         assert_eq!(manager.active_count(), 1);
@@ -227,11 +223,7 @@ mod tests {
             }
         });
 
-        manager.register_prompt(
-            "test-session".to_string(),
-            handle,
-            cancel_token,
-        );
+        manager.register_prompt("test-session".to_string(), handle, cancel_token);
 
         // Cancel the prompt
         let cancelled = manager.cancel_session_prompt("test-session").await;
@@ -256,11 +248,7 @@ mod tests {
         });
 
         let session_id = "test-session";
-        let prompt_id = manager.register_prompt(
-            session_id.to_string(),
-            handle,
-            cancel_token,
-        );
+        let prompt_id = manager.register_prompt(session_id.to_string(), handle, cancel_token);
 
         // Try to complete with wrong ID
         manager.complete_prompt(session_id, "wrong-id");
@@ -284,11 +272,7 @@ mod tests {
         });
 
         let session_id = "test-session";
-        manager.register_prompt(
-            session_id.to_string(),
-            handle1,
-            cancel_token1,
-        );
+        manager.register_prompt(session_id.to_string(), handle1, cancel_token1);
 
         assert_eq!(manager.active_count(), 1);
 
@@ -298,11 +282,7 @@ mod tests {
             // Immediate completion
         });
 
-        manager.register_prompt(
-            session_id.to_string(),
-            handle2,
-            cancel_token2,
-        );
+        manager.register_prompt(session_id.to_string(), handle2, cancel_token2);
 
         // Still only one active prompt
         assert_eq!(manager.active_count(), 1);

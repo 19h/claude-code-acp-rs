@@ -42,10 +42,11 @@ pub fn is_plans_directory_path(path_str: &str) -> bool {
         let input_canonical = match normalized_input.canonicalize() {
             Ok(p) => p,
             Err(_) => {
-                match normalized_input.parent().and_then(|p| p.canonicalize().ok()) {
-                    Some(parent) => parent.join(
-                        normalized_input.file_name().unwrap_or_default()
-                    ),
+                match normalized_input
+                    .parent()
+                    .and_then(|p| p.canonicalize().ok())
+                {
+                    Some(parent) => parent.join(normalized_input.file_name().unwrap_or_default()),
                     None => return false,
                 }
             }
@@ -61,7 +62,11 @@ pub fn is_plans_directory_path(path_str: &str) -> bool {
     let plans_components = normalize_path_components(&plans_canonical);
 
     if input_components.len() >= plans_components.len() {
-        for (i, input_comp) in input_components.iter().enumerate().take(plans_components.len()) {
+        for (i, input_comp) in input_components
+            .iter()
+            .enumerate()
+            .take(plans_components.len())
+        {
             if input_comp != &plans_components[i] {
                 return false;
             }

@@ -79,20 +79,10 @@ pub fn is_known_safe_command(command: &str) -> bool {
 /// - `-fls`, `-fprint`, `-fprint0`, `-fprintf`: Write to files
 fn has_unsafe_find_options(parts: &[&str]) -> bool {
     const UNSAFE_FIND_OPTIONS: &[&str] = &[
-        "-exec",
-        "-execdir",
-        "-ok",
-        "-okdir",
-        "-delete",
-        "-fls",
-        "-fprint",
-        "-fprint0",
-        "-fprintf",
+        "-exec", "-execdir", "-ok", "-okdir", "-delete", "-fls", "-fprint", "-fprint0", "-fprintf",
     ];
 
-    parts
-        .iter()
-        .any(|arg| UNSAFE_FIND_OPTIONS.contains(arg))
+    parts.iter().any(|arg| UNSAFE_FIND_OPTIONS.contains(arg))
 }
 
 /// Check if git subcommand is safe (read-only)
@@ -161,10 +151,7 @@ fn is_valid_sed_print_pattern(pattern: &str) -> bool {
 /// Check if base64 has unsafe options (output to file)
 fn has_unsafe_base64_options(parts: &[&str]) -> bool {
     parts.iter().any(|arg| {
-        *arg == "-o"
-            || *arg == "--output"
-            || arg.starts_with("--output=")
-            || arg.starts_with("-o")  // covers -o and -ofilename
+        *arg == "-o" || *arg == "--output" || arg.starts_with("--output=") || arg.starts_with("-o") // covers -o and -ofilename
     })
 }
 

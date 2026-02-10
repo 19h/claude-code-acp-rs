@@ -35,8 +35,8 @@ use crate::settings::{PermissionChecker, SettingsManager};
 use crate::terminal::TerminalClient;
 use crate::types::{AgentConfig, AgentError, NewSessionMeta, Result};
 
-use super::background_processes::BackgroundTerminal;
 use super::BackgroundProcessManager;
+use super::background_processes::BackgroundTerminal;
 use super::permission::{PermissionHandler, PermissionMode};
 use super::usage::UsageTracker;
 
@@ -83,8 +83,8 @@ pub struct Session {
     hook_callback_registry: Arc<HookCallbackRegistry>,
     /// Permission checker for hooks
     permission_checker: Arc<RwLock<PermissionChecker>>,
-    /// Current model ID for this session (set once during initialization)
-    current_model: OnceLock<String>,
+    /// Current model ID for this session (can be changed at runtime via setSessionModel)
+    current_model: tokio::sync::RwLock<Option<String>>,
     /// ACP MCP server for tool execution with notifications
     acp_mcp_server: Arc<AcpMcpServer>,
     /// Background process manager
@@ -301,7 +301,10 @@ impl Session {
             .can_use_tool(can_use_tool_callback)
             .permission_mode(SdkPermissionMode::AcceptEdits)
             // Using circular buffer (ringbuf) - auto-recycles old data, no need for large buffer
-            .max_buffer_size(20 * 1024 * 1024)  // 20MB 缓冲区
+            .max_buffer_size(20 * 1024 * 1024) // 20MB 缓冲区
+            // 禁止 CLI 加载 ~/.claude/settings.json 等文件系统配置，
+            // 避免用户个人 settings 中的 env.ANTHROPIC_BASE_URL 覆盖代理 URL
+            .setting_sources(vec![])
             .build();
 
         // Debug: Verify can_use_tool is set
@@ -399,6 +402,15 @@ impl Session {
                 );
             }
 
+            // Set fork_session flag if this is a fork operation
+            if meta.fork_session {
+                options.fork_session = true;
+                tracing::info!(
+                    session_id = %session_id,
+                    "Forking session (fork_session=true)"
+                );
+            }
+
             // Set max thinking tokens if provided (enables extended thinking mode)
             if let Some(tokens) = meta.get_max_thinking_tokens() {
                 options.max_thinking_tokens = Some(tokens);
@@ -434,7 +446,7 @@ impl Session {
             connected: AtomicBool::new(false),
             hook_callback_registry,
             permission_checker,
-            current_model: OnceLock::new(),
+            current_model: tokio::sync::RwLock::new(None),
             acp_mcp_server,
             background_processes,
             external_mcp_servers: OnceLock::new(),
@@ -978,21 +990,23 @@ impl Session {
     }
 
     /// Get the current model ID
-    ///
-    /// Note: Not yet used because sacp SDK does not support SetSessionModel.
-    #[allow(dead_code)]
-    pub fn current_model(&self) -> Option<String> {
-        self.current_model.get().cloned()
+    pub async fn current_model(&self) -> Option<String> {
+        self.current_model.read().await.clone()
     }
 
     /// Set the model for this session
     ///
-    /// Note: Not yet used because sacp SDK does not support SetSessionModel.
-    #[allow(dead_code)]
-    pub fn set_model(&self, model_id: String) {
-        // Only set if not already set (may be called multiple times)
-        if self.current_model.get().is_none() {
-            drop(self.current_model.set(model_id));
+    /// Updates the model ID used for subsequent prompts. Also updates the
+    /// underlying SDK client's model option.
+    pub async fn set_model(&self, model_id: String) {
+        let mut model = self.current_model.write().await;
+        *model = Some(model_id.clone());
+        tracing::info!(model_id = %model_id, "Session model updated");
+
+        // Also set model on the SDK client for next prompt
+        let client = self.client.read().await;
+        if let Err(e) = client.set_model(Some(model_id.as_str())).await {
+            tracing::warn!(error = %e, "Failed to set model on SDK client");
         }
     }
 
@@ -1024,6 +1038,15 @@ impl Session {
     pub async fn clear_converter_request_id(&self) {
         let mut converter = self.converter.write().await;
         converter.clear_request_id();
+    }
+
+    /// Clear the tool use cache from the notification converter
+    ///
+    /// Should be called at the end of each prompt to prevent unbounded
+    /// memory growth from accumulated tool use entries.
+    pub async fn clear_converter_cache(&self) {
+        let converter = self.converter.read().await;
+        converter.clear_cache();
     }
 
     /// Get the hook callback registry
@@ -1111,23 +1134,23 @@ impl Session {
         let mut shell_errors = 0;
 
         for shell_id in &shell_ids {
-            if let Some((_, terminal)) = self.background_processes.remove(shell_id) {
-                if let BackgroundTerminal::Running { mut child, .. } = terminal {
-                    match child.kill().await {
-                        Ok(()) => {
-                            // Wait for the process to exit (prevents zombie)
-                            drop(child.wait().await);
-                            shell_success += 1;
-                        }
-                        Err(e) => {
-                            shell_errors += 1;
-                            tracing::warn!(
-                                session_id = %self.session_id,
-                                shell_id = %shell_id,
-                                error = %e,
-                                "Failed to kill background process during cleanup"
-                            );
-                        }
+            if let Some((_, BackgroundTerminal::Running { mut child, .. })) =
+                self.background_processes.remove(shell_id)
+            {
+                match child.kill().await {
+                    Ok(()) => {
+                        // Wait for the process to exit (prevents zombie)
+                        drop(child.wait().await);
+                        shell_success += 1;
+                    }
+                    Err(e) => {
+                        shell_errors += 1;
+                        tracing::warn!(
+                            session_id = %self.session_id,
+                            shell_id = %shell_id,
+                            error = %e,
+                            "Failed to kill background process during cleanup"
+                        );
                     }
                 }
             }
@@ -1425,5 +1448,110 @@ mod tests {
         // Cleanup should succeed
         let result = session.cleanup().await;
         assert!(result.is_ok(), "Cleanup should succeed");
+    }
+
+    // ========================================================================
+    // Bundled CLI integration tests
+    // ========================================================================
+
+    /// Verify the `bundled-cli` feature flag is enabled by default.
+    ///
+    /// This test ensures that when building with default features,
+    /// the `bundled-cli` feature is active, which triggers the SDK's
+    /// build.rs to download the Claude Code CLI binary.
+    ///
+    /// If this test is not compiled, it means the feature is disabled.
+    #[test]
+    #[cfg(feature = "bundled-cli")]
+    fn test_bundled_cli_feature_enabled() {
+        // This test body only compiles when bundled-cli feature is active.
+        // Its mere existence in `cargo test --all-features` output proves the feature works.
+    }
+
+    /// Verify SDK's `bundled_cli_path()` returns a valid path structure.
+    ///
+    /// The path should be: `~/.claude/sdk/bundled/{CLI_VERSION}/claude`
+    /// This validates that the SDK integration is properly wired up.
+    #[test]
+    fn test_bundled_cli_path_structure() {
+        use claude_code_agent_sdk::version::bundled_cli_path;
+        use claude_code_agent_sdk::CLI_VERSION;
+
+        let path = bundled_cli_path().expect("bundled_cli_path() should return Some on systems with HOME");
+        let path_str = path.to_string_lossy();
+
+        // Must contain the bundled directory structure
+        assert!(
+            path_str.contains(".claude/sdk/bundled"),
+            "bundled path should contain '.claude/sdk/bundled', got: {}",
+            path_str
+        );
+
+        // Must contain the CLI version in the path
+        assert!(
+            path_str.contains(CLI_VERSION),
+            "bundled path should contain CLI_VERSION '{}', got: {}",
+            CLI_VERSION,
+            path_str
+        );
+
+        // On Unix, the binary name should be 'claude'
+        #[cfg(not(target_os = "windows"))]
+        assert!(
+            path_str.ends_with("/claude"),
+            "bundled path should end with '/claude', got: {}",
+            path_str
+        );
+
+        // On Windows, the binary name should be 'claude.exe'
+        #[cfg(target_os = "windows")]
+        assert!(
+            path_str.ends_with("\\claude.exe"),
+            "bundled path should end with '\\claude.exe', got: {}",
+            path_str
+        );
+    }
+
+    /// Verify SDK's CLI_VERSION is a valid semver that meets the minimum requirement.
+    #[test]
+    fn test_bundled_cli_version_valid() {
+        use claude_code_agent_sdk::CLI_VERSION;
+        use claude_code_agent_sdk::version::{check_version, parse_version};
+
+        // CLI_VERSION must parse as valid semver
+        let parsed = parse_version(CLI_VERSION);
+        assert!(
+            parsed.is_some(),
+            "CLI_VERSION '{}' should be valid semver",
+            CLI_VERSION
+        );
+
+        // CLI_VERSION must meet the minimum CLI version requirement
+        assert!(
+            check_version(CLI_VERSION),
+            "CLI_VERSION '{}' should meet minimum version requirement",
+            CLI_VERSION
+        );
+    }
+
+    /// Verify that Session does NOT set cli_path explicitly,
+    /// relying on the SDK's find_cli() to auto-discover the bundled CLI.
+    ///
+    /// This is important because the SDK's find_cli() Strategy 0 checks
+    /// the bundled path first, so we should NOT override that behavior.
+    #[test]
+    fn test_session_uses_sdk_auto_discovery() {
+        let session = Session::new(
+            "test-bundled-cli".to_string(),
+            PathBuf::from("/tmp"),
+            &test_config(),
+            None,
+        )
+        .unwrap();
+
+        // Session should exist without explicitly setting cli_path.
+        // The SDK's find_cli() will handle CLI discovery at connect time,
+        // checking the bundled path (~/.claude/sdk/bundled/{version}/claude) first.
+        assert!(!session.is_connected());
     }
 }

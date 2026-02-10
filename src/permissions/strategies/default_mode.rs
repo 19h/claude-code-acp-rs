@@ -6,8 +6,8 @@
 //! - Requires user permission for other operations
 
 use crate::command_safety::is_known_safe_command;
-use crate::session::{PermissionMode, ToolPermissionResult};
 use crate::permissions::strategies::PermissionModeStrategy;
+use crate::session::{PermissionMode, ToolPermissionResult};
 use serde_json::Value;
 
 /// Strategy for Default mode - standard permission prompts

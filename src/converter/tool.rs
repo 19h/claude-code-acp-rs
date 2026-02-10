@@ -206,7 +206,10 @@ pub fn extract_tool_info(name: &str, input: &serde_json::Value, cwd: Option<&Pat
             let path = input.get("path").and_then(|v| v.as_str()).unwrap_or(".");
             // Reference: vendors/claude-code-acp/src/tools.ts:241
             // TypeScript uses: "List the 'path' directory's contents"
-            let title = format!("List the '{}' directory's contents", truncate_path(path, cwd_path));
+            let title = format!(
+                "List the '{}' directory's contents",
+                truncate_path(path, cwd_path)
+            );
             ToolInfo::new(title, ToolKind::Search)
         }
 
@@ -242,7 +245,9 @@ pub fn extract_tool_info(name: &str, input: &serde_json::Value, cwd: Option<&Pat
 
         "TodoWrite" => ToolInfo::new("Update task list", ToolKind::Think),
 
-        "EnterPlanMode" | "ExitPlanMode" => ToolInfo::new(effective_name.to_string(), ToolKind::SwitchMode),
+        "EnterPlanMode" | "ExitPlanMode" => {
+            ToolInfo::new(effective_name.to_string(), ToolKind::SwitchMode)
+        }
 
         "AskUserQuestion" => ToolInfo::new("Ask question", ToolKind::Other),
 

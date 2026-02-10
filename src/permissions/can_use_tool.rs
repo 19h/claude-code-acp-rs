@@ -8,16 +8,18 @@ use claude_code_agent_sdk::types::permissions::{
     CanUseToolCallback, PermissionResult, PermissionResultAllow, PermissionResultDeny,
     PermissionUpdate, PermissionUpdateDestination, PermissionUpdateType, ToolPermissionContext,
 };
-use sacp::{JrConnectionCx, link::AgentToClient};
 use sacp::schema::{
     Content, ContentBlock, PermissionOption, PermissionOptionId, PermissionOptionKind,
     RequestPermissionOutcome, RequestPermissionRequest, SessionId, TextContent, ToolCallContent,
     ToolCallUpdate, ToolCallUpdateFields,
 };
+use sacp::{JrConnectionCx, link::AgentToClient};
 use std::sync::{Arc, OnceLock};
 use tracing::{debug, info, warn};
 
-use crate::session::{PermissionMode, PermissionOutcome, PermissionRequestBuilder, Session, ToolPermissionResult};
+use crate::session::{
+    PermissionMode, PermissionOutcome, PermissionRequestBuilder, Session, ToolPermissionResult,
+};
 use crate::types::AgentError;
 use std::fs;
 use std::path::PathBuf;
@@ -81,9 +83,7 @@ fn read_plan_file() -> Result<Option<String>, std::io::Error> {
         if file_size > MAX_PLAN_FILE_SIZE {
             warn!(
                 "Plan file too large ({} bytes > {} limit), skipping: {:?}",
-                file_size,
-                MAX_PLAN_FILE_SIZE,
-                file_path
+                file_size, MAX_PLAN_FILE_SIZE, file_path
             );
             return Ok(None);
         }
@@ -136,34 +136,33 @@ async fn send_exit_plan_mode_request(
     // Priority: 1. Use 'plan' field from tool_input if provided
     //           2. Try to read from plan file
     //           3. Fall back to original tool_input
-    let (raw_input, plan_content_for_display) = if let Some(plan_content) =
-        tool_input.get("plan").and_then(|v| v.as_str())
-    {
-        // Agent provided plan content
-        (
-            serde_json::json!({"plan": plan_content}),
-            Some(plan_content.to_string()),
-        )
-    } else {
-        // Try to read the most recent plan file
-        match read_plan_file() {
-            Ok(Some(plan_content)) => {
-                info!("Read plan file content for ExitPlanMode display");
-                (
-                    serde_json::json!({"plan": plan_content}),
-                    Some(plan_content),
-                )
+    let (raw_input, plan_content_for_display) =
+        if let Some(plan_content) = tool_input.get("plan").and_then(|v| v.as_str()) {
+            // Agent provided plan content
+            (
+                serde_json::json!({"plan": plan_content}),
+                Some(plan_content.to_string()),
+            )
+        } else {
+            // Try to read the most recent plan file
+            match read_plan_file() {
+                Ok(Some(plan_content)) => {
+                    info!("Read plan file content for ExitPlanMode display");
+                    (
+                        serde_json::json!({"plan": plan_content}),
+                        Some(plan_content),
+                    )
+                }
+                Ok(None) => {
+                    warn!("No plan file found, using original tool_input");
+                    (tool_input.clone(), None)
+                }
+                Err(e) => {
+                    warn!("Failed to read plan file: {}, using original tool_input", e);
+                    (tool_input.clone(), None)
+                }
             }
-            Ok(None) => {
-                warn!("No plan file found, using original tool_input");
-                (tool_input.clone(), None)
-            }
-            Err(e) => {
-                warn!("Failed to read plan file: {}, using original tool_input", e);
-                (tool_input.clone(), None)
-            }
-        }
-    };
+        };
 
     // Build content array for plan display
     // This follows TypeScript implementation: content: [{ type: "content", content: { type: "text", text: plan } }]
@@ -214,26 +213,27 @@ async fn send_exit_plan_mode_request(
 
     // Parse the response
     match response.outcome {
-        RequestPermissionOutcome::Selected(selected) => {
-            match &*selected.option_id.0 {
-                "acceptEdits" => {
-                    info!("User selected: Yes, and auto-accept edits");
-                    Ok(ExitPlanModeOutcome::Approve(PermissionMode::AcceptEdits))
-                }
-                "default" => {
-                    info!("User selected: Yes, and manually approve edits");
-                    Ok(ExitPlanModeOutcome::Approve(PermissionMode::Default))
-                }
-                "plan" => {
-                    info!("User selected: No, keep planning");
-                    Ok(ExitPlanModeOutcome::KeepPlanning)
-                }
-                _ => {
-                    warn!("Unknown option_id: {}, treating as keep planning", &*selected.option_id.0);
-                    Ok(ExitPlanModeOutcome::KeepPlanning)
-                }
+        RequestPermissionOutcome::Selected(selected) => match &*selected.option_id.0 {
+            "acceptEdits" => {
+                info!("User selected: Yes, and auto-accept edits");
+                Ok(ExitPlanModeOutcome::Approve(PermissionMode::AcceptEdits))
             }
-        }
+            "default" => {
+                info!("User selected: Yes, and manually approve edits");
+                Ok(ExitPlanModeOutcome::Approve(PermissionMode::Default))
+            }
+            "plan" => {
+                info!("User selected: No, keep planning");
+                Ok(ExitPlanModeOutcome::KeepPlanning)
+            }
+            _ => {
+                warn!(
+                    "Unknown option_id: {}, treating as keep planning",
+                    &*selected.option_id.0
+                );
+                Ok(ExitPlanModeOutcome::KeepPlanning)
+            }
+        },
         RequestPermissionOutcome::Cancelled => {
             info!("ExitPlanMode permission request was cancelled");
             Ok(ExitPlanModeOutcome::KeepPlanning)
@@ -269,7 +269,9 @@ async fn handle_exit_plan_mode(
     };
 
     // Send ExitPlanMode permission request
-    match send_exit_plan_mode_request(&session.session_id, tool_use_id, &tool_input, connection_cx).await {
+    match send_exit_plan_mode_request(&session.session_id, tool_use_id, &tool_input, connection_cx)
+        .await
+    {
         Ok(ExitPlanModeOutcome::Approve(mode)) => {
             info!(
                 session_id = %session.session_id,
@@ -374,7 +376,8 @@ pub fn create_can_use_tool_callback(
                             } else {
                                 warn!("No tool_use_id available for ExitPlanMode");
                                 return PermissionResult::Deny(PermissionResultDeny {
-                                    message: "No tool_use_id available for ExitPlanMode".to_string(),
+                                    message: "No tool_use_id available for ExitPlanMode"
+                                        .to_string(),
                                     interrupt: false,
                                 });
                             }
@@ -424,7 +427,8 @@ pub fn create_can_use_tool_callback(
                             Some(id) => id,
                             None => {
                                 // Try to get from cache (populated by pre_tool_use hook)
-                                if let Some(cached_id) = session.get_cached_tool_use_id(&tool_input) {
+                                if let Some(cached_id) = session.get_cached_tool_use_id(&tool_input)
+                                {
                                     debug!(
                                         tool_name = %tool_name,
                                         cached_tool_use_id = %cached_id,
@@ -437,9 +441,8 @@ pub fn create_can_use_tool_callback(
                                         "No tool_use_id in context or cache - denying for security"
                                     );
                                     return PermissionResult::Deny(PermissionResultDeny {
-                                        message:
-                                            "No tool_use_id available for permission request"
-                                                .to_string(),
+                                        message: "No tool_use_id available for permission request"
+                                            .to_string(),
                                         interrupt: false,
                                     });
                                 }
@@ -477,7 +480,9 @@ pub fn create_can_use_tool_callback(
                                 info!(tool_name = %tool_name, "Permission allowed always by user");
                                 // Add rule to permission checker for future invocations
                                 let handler_guard = session.permission().await;
-                                handler_guard.add_allow_rule_for_tool_call(&tool_name, &tool_input);
+                                handler_guard
+                                    .add_allow_rule_for_tool_call(&tool_name, &tool_input)
+                                    .await;
                                 drop(handler_guard);
                                 PermissionResult::Allow(PermissionResultAllow::default())
                             }

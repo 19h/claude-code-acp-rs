@@ -13,14 +13,14 @@ use std::time::Instant;
 use futures::{Stream, StreamExt};
 use sacp::JrConnectionCx;
 use sacp::link::AgentToClient;
-use tokio_util::sync::CancellationToken;
 use sacp::schema::{
-    AgentCapabilities, ContentBlock, CurrentModeUpdate, Implementation,
-    InitializeRequest, InitializeResponse, LoadSessionRequest, LoadSessionResponse,
-    NewSessionRequest, NewSessionResponse, PromptCapabilities, PromptRequest, PromptResponse,
-    SessionId, SessionMode, SessionModeId, SessionModeState, SessionNotification, SessionUpdate,
-    SetSessionModeRequest, SetSessionModeResponse, StopReason,
+    AgentCapabilities, ContentBlock, CurrentModeUpdate, Implementation, InitializeRequest,
+    InitializeResponse, LoadSessionRequest, LoadSessionResponse, NewSessionRequest,
+    NewSessionResponse, PromptCapabilities, PromptRequest, PromptResponse, SessionId, SessionMode,
+    SessionModeId, SessionModeState, SessionNotification, SessionUpdate, SetSessionModeRequest,
+    SetSessionModeResponse, StopReason,
 };
+use tokio_util::sync::CancellationToken;
 
 // Unstable types from agent-client-protocol-schema
 use agent_client_protocol_schema::{ModelInfo, SessionModelState};
@@ -28,7 +28,9 @@ use tokio::sync::broadcast;
 use tracing::instrument;
 
 use crate::agent::flush;
-use crate::agent::slash_commands::{get_predefined_commands, transform_mcp_command_input};
+use crate::agent::slash_commands::{
+    filter_commands, get_predefined_commands, transform_mcp_command_input,
+};
 use crate::session::{PermissionMode, SessionManager};
 use crate::terminal::TerminalClient;
 use crate::types::{AgentConfig, AgentError, NewSessionMeta};
@@ -55,7 +57,18 @@ pub fn handle_initialize(request: InitializeRequest, _config: &AgentConfig) -> I
     // Build agent capabilities using builder pattern
     let prompt_caps = PromptCapabilities::new().image(true).embedded_context(true);
 
-    let capabilities = AgentCapabilities::new().prompt_capabilities(prompt_caps);
+    let mcp_caps = sacp::schema::McpCapabilities::new().http(true).sse(true);
+
+    let session_caps = sacp::schema::SessionCapabilities::new()
+        .fork(agent_client_protocol_schema::SessionForkCapabilities::default())
+        .list(agent_client_protocol_schema::SessionListCapabilities::default())
+        .resume(agent_client_protocol_schema::SessionResumeCapabilities::default());
+
+    let capabilities = AgentCapabilities::new()
+        .prompt_capabilities(prompt_caps)
+        .mcp_capabilities(mcp_caps)
+        .session_capabilities(session_caps)
+        .load_session(true);
 
     // Build agent info
     let agent_info =
@@ -159,7 +172,7 @@ pub async fn handle_new_session(
     // Send available commands list to client
     // This is done asynchronously (similar to TypeScript's setTimeout)
     // to ensure the response is sent first
-    #[cfg(not(test))]  // Only in production, skip in tests
+    #[cfg(not(test))] // Only in production, skip in tests
     {
         let session_id_clone = session_id.clone();
         tokio::spawn(async move {
@@ -294,8 +307,10 @@ fn build_available_models(config: &AgentConfig) -> SessionModelState {
     let display_name = current_model_id.clone();
 
     // Build available models list with the current model
-    let available_models = vec![ModelInfo::new(current_model_id.clone(), display_name)
-        .description(format!("Current model: {}", current_model_id))];
+    let available_models = vec![
+        ModelInfo::new(current_model_id.clone(), display_name)
+            .description(format!("Current model: {}", current_model_id)),
+    ];
 
     SessionModelState::new(current_model_id, available_models)
 }
@@ -310,7 +325,7 @@ fn send_available_commands_update(
     session_id: &str,
     connection_cx: JrConnectionCx<AgentToClient>,
 ) -> Result<(), AgentError> {
-    let commands = get_predefined_commands();
+    let commands = filter_commands(get_predefined_commands());
     let command_count = commands.len();
 
     #[cfg(not(test))]
@@ -467,7 +482,10 @@ pub async fn handle_prompt(
         if !query_text.is_empty() {
             // Transform MCP command format: /mcp:server:cmd -> /server:cmd (MCP)
             let transformed_query = transform_mcp_command_input(&query_text);
-            client.query(&transformed_query).await.map_err(AgentError::from)?;
+            client
+                .query(&transformed_query)
+                .await
+                .map_err(AgentError::from)?;
         }
     }
     let query_elapsed = query_start.elapsed();
@@ -521,7 +539,7 @@ pub async fn handle_prompt(
 
                 // KEY FIX: Synchronous drain - wait until queue is fully empty (50ms silence)
                 // This prevents old messages from leaking into the next prompt
-                drain_messages_synchronously(&session_id, &request_id, &mut stream).await;
+                drain_messages_synchronously(session_id, &request_id, &mut stream).await;
 
                 tracing::info!(
                     session_id = %session_id,
@@ -558,7 +576,7 @@ pub async fn handle_prompt(
                 session.cancel().await;
 
                 // Same synchronous drain for lagged cancel
-                drain_messages_synchronously(&session_id, &request_id, &mut stream).await;
+                drain_messages_synchronously(session_id, &request_id, &mut stream).await;
 
                 tracing::info!(
                     session_id = %session_id,
@@ -579,6 +597,8 @@ pub async fn handle_prompt(
                 notification_count = notification_count,
                 "Prompt cancelled by user"
             );
+            session.clear_converter_request_id().await;
+            session.clear_converter_cache().await;
             return Ok(PromptResponse::new(StopReason::Cancelled));
         }
 
@@ -692,6 +712,12 @@ pub async fn handle_prompt(
     // method from the official library.
     //
     flush::ensure_notifications_flushed(&connection_cx, notification_count).await;
+
+    // Clean up converter state for this prompt:
+    // - Clear request_id so it doesn't leak into future prompts
+    // - Clear tool_use_cache to prevent unbounded memory growth
+    session.clear_converter_request_id().await;
+    session.clear_converter_cache().await;
 
     // Determine stop reason based on cancellation state and ResultMessage
     // Reference: vendors/claude-code-acp/src/acp-agent.ts lines 286-323
@@ -983,9 +1009,19 @@ fn extract_text_from_content(blocks: &[ContentBlock]) -> String {
 /// This function is kept for reference/debugging purposes only.
 #[allow(dead_code)]
 async fn drain_leftover_messages(
-    stream: &mut Pin<Box<dyn Stream<Item = Result<claude_code_agent_sdk::Message, claude_code_agent_sdk::ClaudeError>> + Send + '_>>,
+    stream: &mut Pin<
+        Box<
+            dyn Stream<
+                    Item = Result<
+                        claude_code_agent_sdk::Message,
+                        claude_code_agent_sdk::ClaudeError,
+                    >,
+                > + Send
+                + '_,
+        >,
+    >,
 ) {
-    use tokio::time::{timeout, Duration};
+    use tokio::time::{Duration, timeout};
 
     let mut drained_count = 0;
     let max_drain_time = Duration::from_millis(100);
@@ -998,7 +1034,10 @@ async fn drain_leftover_messages(
                 drained_count += 1;
                 // Log the drained message type for debugging
                 tracing::debug!(
-                    drained_message_type = format!("{:?}", message).chars().take(50).collect::<String>(),
+                    drained_message_type = format!("{:?}", message)
+                        .chars()
+                        .take(50)
+                        .collect::<String>(),
                     "Drained leftover message from previous prompt"
                 );
             }
@@ -1043,9 +1082,19 @@ async fn drain_leftover_messages(
 async fn drain_messages_synchronously(
     session_id: &str,
     request_id: &str,
-    stream: &mut Pin<Box<dyn Stream<Item = Result<claude_code_agent_sdk::Message, claude_code_agent_sdk::ClaudeError>> + Send + '_>>,
+    stream: &mut Pin<
+        Box<
+            dyn Stream<
+                    Item = Result<
+                        claude_code_agent_sdk::Message,
+                        claude_code_agent_sdk::ClaudeError,
+                    >,
+                > + Send
+                + '_,
+        >,
+    >,
 ) {
-    use tokio::time::{timeout, Duration};
+    use tokio::time::{Duration, timeout};
 
     let drain_start = Instant::now();
     let mut drained_count = 0;
@@ -1106,7 +1155,8 @@ async fn drain_messages_synchronously(
             Err(_) => {
                 // Timeout - check if we've had enough silence
                 // Use saturating_sub to prevent theoretical underflow
-                let time_since_last_message = drain_start.elapsed().saturating_sub(last_message_time);
+                let time_since_last_message =
+                    drain_start.elapsed().saturating_sub(last_message_time);
                 if time_since_last_message >= silence_duration {
                     tracing::info!(
                         session_id = %session_id,
@@ -1142,13 +1192,469 @@ async fn drain_messages_synchronously(
     }
 }
 
+// ============================================================================
+// Unstable Session Handlers
+// ============================================================================
+
+/// Handle session/set_model request
+///
+/// Sets the model for a session. The model will be used for subsequent prompts.
+/// Reference: TS `unstable_setSessionModel` in acp-agent.ts
+pub async fn handle_set_session_model(
+    request: agent_client_protocol_schema::SetSessionModelRequest,
+    sessions: &Arc<SessionManager>,
+) -> Result<agent_client_protocol_schema::SetSessionModelResponse, AgentError> {
+    let session_id = request.session_id.0.as_ref();
+    let model_id = request.model_id.0.as_ref();
+
+    tracing::info!(
+        session_id = %session_id,
+        model_id = %model_id,
+        "Setting session model"
+    );
+
+    let session = sessions.get_session_or_error(session_id)?;
+    session.set_model(model_id.to_string()).await;
+
+    tracing::info!(
+        session_id = %session_id,
+        model_id = %model_id,
+        "Session model set successfully"
+    );
+
+    Ok(agent_client_protocol_schema::SetSessionModelResponse::new())
+}
+
+/// Handle session/fork request
+///
+/// Creates a new session that forks from an existing session's conversation state.
+/// Uses the SDK's `fork_session` + `resume` options to create an independent copy.
+/// Reference: TS `unstable_forkSession` in acp-agent.ts
+#[allow(unused_variables)]
+pub fn handle_fork_session(
+    request: agent_client_protocol_schema::ForkSessionRequest,
+    config: &AgentConfig,
+    sessions: &Arc<SessionManager>,
+    connection_cx: JrConnectionCx<AgentToClient>,
+) -> Result<agent_client_protocol_schema::ForkSessionResponse, AgentError> {
+    let source_session_id = request.session_id.0.to_string();
+    let cwd = request.cwd;
+
+    tracing::info!(
+        source_session_id = %source_session_id,
+        cwd = ?cwd,
+        "Forking session"
+    );
+
+    // Create meta with resume + fork
+    let meta = NewSessionMeta::with_resume_and_fork(&source_session_id);
+
+    // Generate new session ID for the forked session
+    let new_session_id = uuid::Uuid::new_v4().to_string();
+
+    // Create the forked session
+    let session =
+        sessions.create_session(new_session_id.clone(), cwd.clone(), config, Some(&meta))?;
+
+    // Store external MCP servers if provided
+    if !request.mcp_servers.is_empty() {
+        session.set_external_mcp_servers(request.mcp_servers);
+    }
+
+    // Build response with available modes and models (same as new session)
+    let available_modes = build_available_modes();
+    let mode_state = SessionModeState::new("default", available_modes);
+    let model_state = build_available_models(config);
+
+    // Send available commands update
+    #[cfg(not(test))]
+    {
+        let session_id_clone = new_session_id.clone();
+        tokio::spawn(async move {
+            if let Err(e) = send_available_commands_update(&session_id_clone, connection_cx) {
+                tracing::warn!(
+                    session_id = %session_id_clone,
+                    "Failed to send available commands update for forked session: {}",
+                    e
+                );
+            }
+        });
+    }
+
+    tracing::info!(
+        source_session_id = %source_session_id,
+        new_session_id = %new_session_id,
+        "Session forked successfully"
+    );
+
+    Ok(
+        agent_client_protocol_schema::ForkSessionResponse::new(new_session_id)
+            .modes(mode_state)
+            .models(model_state),
+    )
+}
+
+/// Handle session/resume request
+///
+/// Resumes an existing session from its conversation history.
+/// Similar to fork but without creating an independent copy.
+/// Reference: TS `unstable_resumeSession` in acp-agent.ts
+#[allow(unused_variables)]
+pub fn handle_resume_session(
+    request: agent_client_protocol_schema::ResumeSessionRequest,
+    config: &AgentConfig,
+    sessions: &Arc<SessionManager>,
+    connection_cx: JrConnectionCx<AgentToClient>,
+) -> Result<agent_client_protocol_schema::ResumeSessionResponse, AgentError> {
+    let resume_session_id = request.session_id.0.to_string();
+    let cwd = request.cwd;
+
+    tracing::info!(
+        resume_session_id = %resume_session_id,
+        cwd = ?cwd,
+        "Resuming session"
+    );
+
+    // Create meta with resume option
+    let meta = NewSessionMeta::with_resume(&resume_session_id);
+
+    // Generate new session ID for the resumed session
+    let new_session_id = uuid::Uuid::new_v4().to_string();
+
+    // Create the resumed session
+    let session =
+        sessions.create_session(new_session_id.clone(), cwd.clone(), config, Some(&meta))?;
+
+    // Store external MCP servers if provided
+    if !request.mcp_servers.is_empty() {
+        session.set_external_mcp_servers(request.mcp_servers);
+    }
+
+    // Build response with available modes and models
+    let available_modes = build_available_modes();
+    let mode_state = SessionModeState::new("default", available_modes);
+    let model_state = build_available_models(config);
+
+    // Send available commands update
+    #[cfg(not(test))]
+    {
+        let session_id_clone = new_session_id.clone();
+        tokio::spawn(async move {
+            if let Err(e) = send_available_commands_update(&session_id_clone, connection_cx) {
+                tracing::warn!(
+                    session_id = %session_id_clone,
+                    "Failed to send available commands update for resumed session: {}",
+                    e
+                );
+            }
+        });
+    }
+
+    tracing::info!(
+        resume_session_id = %resume_session_id,
+        new_session_id = %new_session_id,
+        "Session resumed successfully"
+    );
+
+    Ok(agent_client_protocol_schema::ResumeSessionResponse::new()
+        .modes(mode_state)
+        .models(model_state))
+}
+
+/// Handle session/list request
+///
+/// Lists available sessions from the JSONL files in `~/.claude/projects/`.
+/// Supports pagination via cursor and filtering by cwd.
+/// Reference: TS `unstable_listSessions` in acp-agent.ts
+pub fn handle_list_sessions(
+    request: agent_client_protocol_schema::ListSessionsRequest,
+) -> Result<agent_client_protocol_schema::ListSessionsResponse, AgentError> {
+    use agent_client_protocol_schema::SessionInfo;
+
+    const PAGE_SIZE: usize = 50;
+
+    let claude_dir = dirs::home_dir()
+        .ok_or_else(|| AgentError::Internal("No home directory found".to_string()))?
+        .join(".claude")
+        .join("projects");
+
+    tracing::info!(
+        claude_dir = ?claude_dir,
+        cwd_filter = ?request.cwd,
+        cursor = ?request.cursor,
+        "Listing sessions"
+    );
+
+    // If the projects directory doesn't exist, return empty
+    if !claude_dir.exists() {
+        return Ok(agent_client_protocol_schema::ListSessionsResponse::new(
+            vec![],
+        ));
+    }
+
+    let cwd_filter_str = request
+        .cwd
+        .as_ref()
+        .map(|p| p.to_string_lossy().to_string());
+    let encoded_cwd_filter = request.cwd.as_ref().map(|cwd| encode_project_path(cwd));
+
+    let mut all_sessions: Vec<SessionInfo> = Vec::new();
+
+    // Read project directories
+    let project_dirs = match std::fs::read_dir(&claude_dir) {
+        Ok(dirs) => dirs,
+        Err(e) => {
+            tracing::error!(error = %e, "Failed to read projects directory");
+            return Ok(agent_client_protocol_schema::ListSessionsResponse::new(
+                vec![],
+            ));
+        }
+    };
+
+    for entry in project_dirs.flatten() {
+        let project_dir = entry.path();
+        if !project_dir.is_dir() {
+            continue;
+        }
+
+        let encoded_path = entry.file_name().to_string_lossy().to_string();
+
+        // Coarse pre-filter by encoded path
+        if let Some(ref filter) = encoded_cwd_filter {
+            if &encoded_path != filter {
+                continue;
+            }
+        }
+
+        // Read JSONL files in this project directory
+        let Ok(files) = std::fs::read_dir(&project_dir) else {
+            continue;
+        };
+
+        for file_entry in files.flatten() {
+            let file_path = file_entry.path();
+            let file_name = file_entry.file_name().to_string_lossy().to_string();
+
+            // Skip non-JSONL files and agent-* files (internal metadata)
+            if !std::path::Path::new(&file_name)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("jsonl"))
+                || file_name.starts_with("agent-")
+            {
+                continue;
+            }
+
+            let session_id = file_name.trim_end_matches(".jsonl").to_string();
+
+            match parse_session_file(&file_path, &session_id, cwd_filter_str.as_deref()) {
+                Ok(Some(info)) => all_sessions.push(info),
+                Ok(None) => {} // Filtered out
+                Err(e) => {
+                    tracing::warn!(
+                        file = ?file_path,
+                        error = %e,
+                        "Failed to parse session file"
+                    );
+                }
+            }
+        }
+    }
+
+    // Sort by updatedAt descending (most recent first)
+    all_sessions.sort_by(|a, b| {
+        let time_a = a.updated_at.as_deref().unwrap_or("");
+        let time_b = b.updated_at.as_deref().unwrap_or("");
+        time_b.cmp(time_a)
+    });
+
+    // Handle pagination with cursor
+    let start_index = if let Some(ref cursor) = request.cursor {
+        parse_cursor(cursor).unwrap_or(0)
+    } else {
+        0
+    };
+
+    let page = all_sessions
+        .into_iter()
+        .skip(start_index)
+        .take(PAGE_SIZE)
+        .collect::<Vec<_>>();
+
+    let has_more = start_index + PAGE_SIZE < page.len() + start_index; // Simplified check
+
+    let mut response = agent_client_protocol_schema::ListSessionsResponse::new(page);
+
+    // Note: ListSessionsResponse has next_cursor field behind the feature flag
+    // We check if there are more results and set the cursor
+    if has_more {
+        let next_offset = start_index + PAGE_SIZE;
+        let cursor_json = serde_json::json!({"offset": next_offset});
+        let cursor_str = base64_encode(&cursor_json.to_string());
+        response.next_cursor = Some(cursor_str);
+    }
+
+    Ok(response)
+}
+
+/// Parse a session JSONL file to extract session info
+///
+/// Reads the file and extracts:
+/// - cwd from any entry
+/// - title from the first user message
+/// - updatedAt from file modification time
+fn parse_session_file(
+    file_path: &std::path::Path,
+    session_id: &str,
+    cwd_filter: Option<&str>,
+) -> Result<Option<agent_client_protocol_schema::SessionInfo>, std::io::Error> {
+    use std::io::BufRead;
+
+    let file = std::fs::File::open(file_path)?;
+    let reader = std::io::BufReader::new(file);
+
+    let mut session_cwd: Option<String> = None;
+    let mut title: Option<String> = None;
+    let mut parsed_any = false;
+
+    for line in reader.lines() {
+        let line = match line {
+            Ok(l) if !l.is_empty() => l,
+            _ => continue,
+        };
+
+        let entry: serde_json::Value = match serde_json::from_str(&line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        parsed_any = true;
+
+        // Skip sidechain entries
+        if entry.get("isSidechain") == Some(&serde_json::Value::Bool(true)) {
+            continue;
+        }
+
+        // Extract cwd
+        if session_cwd.is_none() {
+            if let Some(cwd) = entry.get("cwd").and_then(|v| v.as_str()) {
+                session_cwd = Some(cwd.to_string());
+            }
+        }
+
+        // Extract title from first user message
+        if title.is_none() {
+            if entry.get("type").and_then(|v| v.as_str()) == Some("user") {
+                if let Some(content) = entry.get("message").and_then(|m| m.get("content")) {
+                    title = extract_title_from_content(content);
+                }
+            }
+        }
+
+        // Stop if we have both
+        if title.is_some() && session_cwd.is_some() {
+            break;
+        }
+    }
+
+    if !parsed_any {
+        return Ok(None);
+    }
+
+    // SessionInfo.cwd is required
+    let Some(cwd) = session_cwd else {
+        return Ok(None);
+    };
+
+    // Verify cwd matches filter if provided
+    if let Some(filter) = cwd_filter {
+        if cwd != filter {
+            return Ok(None);
+        }
+    }
+
+    // Get file modification time
+    let updated_at = std::fs::metadata(file_path)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .map(|t| {
+            let datetime: chrono::DateTime<chrono::Utc> = t.into();
+            datetime.to_rfc3339()
+        });
+
+    let mut info = agent_client_protocol_schema::SessionInfo::new(session_id.to_string(), &cwd);
+    info.title = title;
+    info.updated_at = updated_at;
+
+    Ok(Some(info))
+}
+
+/// Extract title from message content
+fn extract_title_from_content(content: &serde_json::Value) -> Option<String> {
+    let text = if let Some(s) = content.as_str() {
+        Some(s.to_string())
+    } else if let Some(arr) = content.as_array() {
+        arr.first().and_then(|first| {
+            if let Some(s) = first.as_str() {
+                Some(s.to_string())
+            } else {
+                first.get("text").and_then(|t| t.as_str()).map(String::from)
+            }
+        })
+    } else {
+        None
+    };
+
+    text.map(|t| sanitize_title(&t))
+}
+
+/// Sanitize a title string for display
+fn sanitize_title(text: &str) -> String {
+    // Truncate to reasonable length and trim whitespace
+    let truncated: String = text.chars().take(200).collect();
+    // Remove newlines and excessive whitespace
+    truncated.lines().next().unwrap_or("").trim().to_string()
+}
+
+/// Encode a project path for use as directory name
+///
+/// Replaces path separators with hyphens.
+/// Reference: TS `encodeProjectPath` in utils.ts
+fn encode_project_path(cwd: &std::path::Path) -> String {
+    let path_str = cwd.to_string_lossy();
+    // Unix paths: replace / with -
+    path_str.replace('/', "-")
+}
+
+/// Parse a pagination cursor
+fn parse_cursor(cursor: &str) -> Option<usize> {
+    let decoded = base64_decode(cursor)?;
+    let parsed: serde_json::Value = serde_json::from_str(&decoded).ok()?;
+    parsed
+        .get("offset")?
+        .as_u64()
+        .and_then(|v| usize::try_from(v).ok())
+}
+
+/// Base64 encode a string
+fn base64_encode(s: &str) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(s.as_bytes())
+}
+
+/// Base64 decode a string
+fn base64_decode(s: &str) -> Option<String> {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD.decode(s).ok()?;
+    String::from_utf8(bytes).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::stream;
     use sacp::schema::{ProtocolVersion, TextContent};
     use serial_test::serial;
     use std::time::Duration;
-    use futures::stream;
 
     #[test]
     fn test_handle_initialize() {
@@ -1217,8 +1723,9 @@ mod tests {
             })),
         ];
 
-        let mut stream: Pin<Box<dyn Stream<Item = Result<Message, claude_code_agent_sdk::ClaudeError>> + Send + '_>> =
-            Box::pin(stream::iter(messages));
+        let mut stream: Pin<
+            Box<dyn Stream<Item = Result<Message, claude_code_agent_sdk::ClaudeError>> + Send + '_>,
+        > = Box::pin(stream::iter(messages));
 
         // The drain should complete quickly since the stream ends after 3 messages
         drain_messages_synchronously(session_id, request_id, &mut stream).await;
@@ -1237,8 +1744,9 @@ mod tests {
         let request_id = "test-request";
 
         // Create an empty stream
-        let mut stream: Pin<Box<dyn Stream<Item = Result<Message, claude_code_agent_sdk::ClaudeError>> + Send + '_>> =
-            Box::pin(stream::empty());
+        let mut stream: Pin<
+            Box<dyn Stream<Item = Result<Message, claude_code_agent_sdk::ClaudeError>> + Send + '_>,
+        > = Box::pin(stream::empty());
 
         // The drain should complete immediately for an empty stream
         drain_messages_synchronously(session_id, request_id, &mut stream).await;
@@ -1266,8 +1774,9 @@ mod tests {
             }))
         });
 
-        let mut stream: Pin<Box<dyn Stream<Item = Result<Message, claude_code_agent_sdk::ClaudeError>> + Send + '_>> =
-            Box::pin(stream::iter(messages));
+        let mut stream: Pin<
+            Box<dyn Stream<Item = Result<Message, claude_code_agent_sdk::ClaudeError>> + Send + '_>,
+        > = Box::pin(stream::iter(messages));
 
         // The drain should complete within a reasonable time
         // Even with 50 messages, it should finish quickly (stream ends after yielding all)
@@ -1276,7 +1785,10 @@ mod tests {
         let elapsed = start.elapsed();
 
         // Should complete in under 1 second (much faster than the 5s max timeout)
-        assert!(elapsed < Duration::from_secs(1), "Drain should complete quickly");
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "Drain should complete quickly"
+        );
     }
 
     /// Test that drain_messages_synchronously correctly detects silence period
@@ -1313,8 +1825,9 @@ mod tests {
             })),
         ];
 
-        let mut stream: Pin<Box<dyn Stream<Item = Result<Message, claude_code_agent_sdk::ClaudeError>> + Send + '_>> =
-            Box::pin(stream::iter(messages));
+        let mut stream: Pin<
+            Box<dyn Stream<Item = Result<Message, claude_code_agent_sdk::ClaudeError>> + Send + '_>,
+        > = Box::pin(stream::iter(messages));
 
         // The drain should complete after the stream ends
         let start = std::time::Instant::now();
@@ -1322,7 +1835,10 @@ mod tests {
         let elapsed = start.elapsed();
 
         // Should complete very quickly (stream ends immediately after 3 messages)
-        assert!(elapsed < Duration::from_millis(100), "Drain should detect stream end quickly");
+        assert!(
+            elapsed < Duration::from_millis(100),
+            "Drain should detect stream end quickly"
+        );
     }
 
     /// Test build_available_models function with config model
@@ -1339,7 +1855,10 @@ mod tests {
         assert_eq!(model_state.available_models[0].model_id.0, "glm-4.7".into());
         assert_eq!(model_state.available_models[0].name, "glm-4.7");
         assert_eq!(
-            model_state.available_models[0].description.as_ref().unwrap(),
+            model_state.available_models[0]
+                .description
+                .as_ref()
+                .unwrap(),
             "Current model: glm-4.7"
         );
     }

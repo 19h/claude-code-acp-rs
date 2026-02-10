@@ -82,7 +82,14 @@ impl SettingsWatcher {
 
                         if !changed_paths.is_empty() {
                             tracing::debug!("Settings files changed: {:?}", changed_paths);
-                            drop(tx_clone.send(SettingsChangeEvent { changed_paths }));
+                            if tx_clone
+                                .send(SettingsChangeEvent { changed_paths })
+                                .is_err()
+                            {
+                                tracing::warn!(
+                                    "Settings change receiver dropped, reload will not happen"
+                                );
+                            }
                         }
                     }
                     Err(e) => {

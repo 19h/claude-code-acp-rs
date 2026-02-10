@@ -58,17 +58,20 @@ pub fn create_post_tool_use_hook(callback_registry: Arc<HookCallbackRegistry>) -
                     let start_time = Instant::now();
 
                     // Only handle PostToolUse events
-                    let (tool_name, tool_input, tool_response) = if let HookInput::PostToolUse(post_tool) = &input { (
-                        post_tool.tool_name.clone(),
-                        post_tool.tool_input.clone(),
-                        post_tool.tool_response.clone(),
-                    ) } else {
-                        tracing::debug!("Ignoring non-PostToolUse event");
-                        return HookJsonOutput::Sync(SyncHookJsonOutput {
-                            continue_: Some(true),
-                            ..Default::default()
-                        });
-                    };
+                    let (tool_name, tool_input, tool_response) =
+                        if let HookInput::PostToolUse(post_tool) = &input {
+                            (
+                                post_tool.tool_name.clone(),
+                                post_tool.tool_input.clone(),
+                                post_tool.tool_response.clone(),
+                            )
+                        } else {
+                            tracing::debug!("Ignoring non-PostToolUse event");
+                            return HookJsonOutput::Sync(SyncHookJsonOutput {
+                                continue_: Some(true),
+                                ..Default::default()
+                            });
+                        };
 
                     // Get response preview for logging
                     let response_preview = tool_response
@@ -175,6 +178,7 @@ mod tests {
             tool_name: "Bash".to_string(),
             tool_input: json!({"command": "ls"}),
             tool_response: json!("file1\nfile2"),
+            tool_use_id: "test-tool-use-id".to_string(),
         });
 
         let result = hook(input, Some("test-id".to_string()), HookContext::default()).await;
@@ -202,6 +206,7 @@ mod tests {
             tool_name: "Read".to_string(),
             tool_input: json!({"file_path": "/tmp/test.txt"}),
             tool_response: json!("content"),
+            tool_use_id: "test-tool-use-id".to_string(),
         });
 
         let result = hook(
@@ -232,6 +237,7 @@ mod tests {
             tool_name: "Read".to_string(),
             tool_input: json!({}),
             tool_response: json!("content"),
+            tool_use_id: "test-tool-use-id".to_string(),
         });
 
         let result = hook(input, None, HookContext::default()).await;
@@ -256,6 +262,7 @@ mod tests {
             permission_mode: None,
             tool_name: "Read".to_string(),
             tool_input: json!({}),
+            tool_use_id: "test-tool-use-id".to_string(),
         });
 
         let result = hook(input, Some("test-id".to_string()), HookContext::default()).await;

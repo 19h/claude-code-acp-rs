@@ -128,7 +128,10 @@ impl Tool for GlobTool {
         let offset = params.offset.unwrap_or(0);
         // We need to collect more than offset + head_limit to account for filtering
         // Use a 3x multiplier to handle cases where many entries are filtered (directories, non-matching files)
-        let total_to_collect = offset.saturating_add(collection_limit).saturating_mul(3).min(MAX_RESULTS * 3);
+        let total_to_collect = offset
+            .saturating_add(collection_limit)
+            .saturating_mul(3)
+            .min(MAX_RESULTS * 3);
 
         for entry in WalkDir::new(&search_dir)
             .follow_links(false)

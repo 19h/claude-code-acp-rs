@@ -7,9 +7,22 @@ use sacp::schema::{AvailableCommand, AvailableCommandInput, UnstructuredCommandI
 
 /// Cached regex for matching MCP command format
 /// Pattern: /mcp:server:name [args]
-static MCP_COMMAND_REGEX: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-    regex::Regex::new(r"^/mcp:([^:\s]+):(\S+)(\s+.*)?$").unwrap()
-});
+static MCP_COMMAND_REGEX: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r"^/mcp:([^:\s]+):(\S+)(\s+.*)?$").unwrap());
+
+/// CLI-only slash commands that should NOT be exposed to ACP clients.
+///
+/// These commands are specific to the interactive CLI experience and
+/// don't make sense in an ACP context (e.g., editor integrations like Zed).
+const UNSUPPORTED_COMMANDS: &[&str] = &[
+    "cost",
+    "keybindings-help",
+    "login",
+    "logout",
+    "output-style:new",
+    "release-notes",
+    "todos",
+];
 
 /// Predefined slash commands
 ///
@@ -17,19 +30,31 @@ static MCP_COMMAND_REGEX: std::sync::LazyLock<regex::Regex> = std::sync::LazyLoc
 /// The client can display them to users for quick access.
 pub fn get_predefined_commands() -> Vec<AvailableCommand> {
     vec![
-        AvailableCommand::new("compact", "Compact conversation with optional focus instructions")
-            .input(Some(AvailableCommandInput::Unstructured(
-                UnstructuredCommandInput::new("[instructions]"),
-            ))),
-        AvailableCommand::new("init", "Initialize project with CLAUDE.md guide")
-            .input(Some(AvailableCommandInput::Unstructured(
-                UnstructuredCommandInput::new(""),
-            ))),
-        AvailableCommand::new("review", "Request code review")
-            .input(Some(AvailableCommandInput::Unstructured(
-                UnstructuredCommandInput::new("[scope or file]"),
-            ))),
+        AvailableCommand::new(
+            "compact",
+            "Compact conversation with optional focus instructions",
+        )
+        .input(Some(AvailableCommandInput::Unstructured(
+            UnstructuredCommandInput::new("[instructions]"),
+        ))),
+        AvailableCommand::new("init", "Initialize project with CLAUDE.md guide").input(Some(
+            AvailableCommandInput::Unstructured(UnstructuredCommandInput::new("")),
+        )),
+        AvailableCommand::new("review", "Request code review").input(Some(
+            AvailableCommandInput::Unstructured(UnstructuredCommandInput::new("[scope or file]")),
+        )),
     ]
+}
+
+/// Filter out CLI-only commands that should not be exposed to ACP clients.
+///
+/// When the Claude SDK provides a dynamic command list, this function
+/// filters out commands that only make sense in the interactive CLI.
+pub fn filter_commands(commands: Vec<AvailableCommand>) -> Vec<AvailableCommand> {
+    commands
+        .into_iter()
+        .filter(|cmd| !UNSUPPORTED_COMMANDS.contains(&cmd.name.as_str()))
+        .collect()
 }
 
 /// Transform MCP command input format
@@ -61,10 +86,7 @@ mod tests {
             "/server:cmd (MCP) some args"
         );
         // Regular command (no transformation)
-        assert_eq!(
-            transform_mcp_command_input("/compact"),
-            "/compact"
-        );
+        assert_eq!(transform_mcp_command_input("/compact"), "/compact");
         // MCP command without args
         assert_eq!(
             transform_mcp_command_input("/mcp:test:run"),
@@ -108,7 +130,10 @@ mod tests {
     #[test]
     fn test_regular_slash_command() {
         assert_eq!(transform_mcp_command_input("/commit"), "/commit");
-        assert_eq!(transform_mcp_command_input("/review file.rs"), "/review file.rs");
+        assert_eq!(
+            transform_mcp_command_input("/review file.rs"),
+            "/review file.rs"
+        );
     }
 
     #[test]
@@ -129,5 +154,53 @@ mod tests {
     fn test_command_count() {
         let commands = get_predefined_commands();
         assert_eq!(commands.len(), 3);
+    }
+
+    #[test]
+    fn test_filter_removes_unsupported_commands() {
+        let commands = vec![
+            AvailableCommand::new("compact", "Compact conversation"),
+            AvailableCommand::new("cost", "Show cost info"),
+            AvailableCommand::new("login", "Log in"),
+            AvailableCommand::new("review", "Code review"),
+            AvailableCommand::new("todos", "Show todos"),
+        ];
+        let filtered = filter_commands(commands);
+        assert_eq!(filtered.len(), 2);
+        assert!(filtered.iter().any(|c| c.name == "compact"));
+        assert!(filtered.iter().any(|c| c.name == "review"));
+    }
+
+    #[test]
+    fn test_filter_keeps_all_supported_commands() {
+        let commands = vec![
+            AvailableCommand::new("compact", "Compact"),
+            AvailableCommand::new("init", "Init"),
+            AvailableCommand::new("review", "Review"),
+        ];
+        let filtered = filter_commands(commands);
+        assert_eq!(filtered.len(), 3);
+    }
+
+    #[test]
+    fn test_filter_removes_all_unsupported() {
+        let commands = vec![
+            AvailableCommand::new("cost", ""),
+            AvailableCommand::new("keybindings-help", ""),
+            AvailableCommand::new("login", ""),
+            AvailableCommand::new("logout", ""),
+            AvailableCommand::new("output-style:new", ""),
+            AvailableCommand::new("release-notes", ""),
+            AvailableCommand::new("todos", ""),
+        ];
+        let filtered = filter_commands(commands);
+        assert!(filtered.is_empty());
+    }
+
+    #[test]
+    fn test_predefined_commands_not_in_unsupported() {
+        let commands = get_predefined_commands();
+        let filtered = filter_commands(commands.clone());
+        assert_eq!(commands.len(), filtered.len());
     }
 }

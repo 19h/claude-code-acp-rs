@@ -70,19 +70,12 @@ impl std::fmt::Debug for PendingPermissionRequest {
 pub struct PermissionManager {
     /// Pending permission requests (unbounded, never blocks on send)
     pending_requests: tokio::sync::mpsc::UnboundedSender<PendingPermissionRequest>,
-
-    /// Connection to client for sending permission requests
-    /// Note: Currently used by `send_permission_request_to_client` which is prepared
-    /// for future interactive permission dialog implementation.
-    #[allow(dead_code)]
-    connection_cx: Arc<JrConnectionCx<AgentToClient>>,
 }
 
 impl std::fmt::Debug for PermissionManager {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PermissionManager")
             .field("pending_requests", &"<mpsc::UnboundedSender>")
-            .field("connection_cx", &"<JrConnectionCx>")
             .finish()
     }
 }
@@ -93,13 +86,13 @@ impl PermissionManager {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
 
         // Spawn background task to handle permission requests
+        let cx = connection_cx.clone();
         tokio::spawn(async move {
-            Self::handle_permission_requests(rx).await;
+            Self::handle_permission_requests(rx, cx).await;
         });
 
         Self {
             pending_requests: tx,
-            connection_cx,
         }
     }
 
@@ -127,7 +120,11 @@ impl PermissionManager {
         };
 
         // Send to background task (unbounded channel never blocks)
-        drop(self.pending_requests.send(request));
+        if let Err(err) = self.pending_requests.send(request) {
+            tracing::error!("Permission request channel closed, background task may have panicked");
+            // Return Cancelled via oneshot so the caller doesn't hang forever
+            let _ = err.0.response_tx.send(PermissionManagerDecision::Cancelled);
+        }
 
         rx
     }
@@ -135,6 +132,7 @@ impl PermissionManager {
     /// Background task: handle permission requests
     async fn handle_permission_requests(
         mut receiver: tokio::sync::mpsc::UnboundedReceiver<PendingPermissionRequest>,
+        connection_cx: Arc<JrConnectionCx<AgentToClient>>,
     ) {
         while let Some(request) = receiver.recv().await {
             tracing::info!(
@@ -143,34 +141,43 @@ impl PermissionManager {
                 "Processing permission request in background task"
             );
 
-            // TODO: Send permission request to client via SACP
-            // For now, we'll simulate the request and response
+            // Send permission request to client via SACP and wait for response
+            let decision = match Self::send_permission_request_to_client(
+                &connection_cx,
+                &request.tool_name,
+                &request.tool_input,
+                &request.tool_call_id,
+                &request.session_id,
+            )
+            .await
+            {
+                Ok(decision) => {
+                    tracing::info!(
+                        tool_name = %request.tool_name,
+                        tool_call_id = %request.tool_call_id,
+                        decision = ?decision,
+                        "Permission decision received from client"
+                    );
+                    decision
+                }
+                Err(e) => {
+                    tracing::error!(
+                        tool_name = %request.tool_name,
+                        tool_call_id = %request.tool_call_id,
+                        error = %e,
+                        "Failed to send permission request to client, defaulting to Cancelled"
+                    );
+                    PermissionManagerDecision::Cancelled
+                }
+            };
 
-            // This is where we would:
-            // 1. Build the RequestPermissionRequest
-            // 2. Send it via SACP to the client
-            // 3. Wait for the client's response
-            // 4. Send the result to response_tx
-
-            // For now, deny with a message explaining the limitation
-            let _ = request
-                .response_tx
-                .send(PermissionManagerDecision::Cancelled);
-
-            tracing::warn!(
-                tool_name = %request.tool_name,
-                "Permission request sent but interactive dialog not yet implemented"
-            );
+            let _ = request.response_tx.send(decision);
         }
     }
 
     /// Send permission request to client via SACP
-    ///
-    /// Note: This method is prepared for future interactive permission dialog implementation.
-    /// Currently, permission requests are handled by the SDK's `can_use_tool` callback.
-    #[allow(dead_code)]
     async fn send_permission_request_to_client(
-        &self,
+        connection_cx: &JrConnectionCx<AgentToClient>,
         tool_name: &str,
         tool_input: &serde_json::Value,
         tool_call_id: &str,
@@ -208,8 +215,7 @@ impl PermissionManager {
             RequestPermissionRequest::new(SessionId::new(session_id), tool_call_update, options);
 
         // Send request and wait for response
-        let response = self
-            .connection_cx
+        let response = connection_cx
             .send_request(request)
             .block_task()
             .await
@@ -221,8 +227,6 @@ impl PermissionManager {
 }
 
 /// Parse a permission response outcome into our decision type
-///
-/// Note: Prepared for future interactive permission dialog implementation.
 #[allow(dead_code)]
 fn parse_permission_response(outcome: RequestPermissionOutcome) -> PermissionManagerDecision {
     match outcome {
@@ -241,9 +245,6 @@ fn parse_permission_response(outcome: RequestPermissionOutcome) -> PermissionMan
 }
 
 /// Format a title for the permission dialog based on tool name and input
-///
-/// Note: Prepared for future interactive permission dialog implementation.
-#[allow(dead_code)]
 fn format_tool_title(tool_name: &str, input: &serde_json::Value) -> String {
     // Strip mcp__acp__ prefix for display
     let display_name = tool_name.strip_prefix("mcp__acp__").unwrap_or(tool_name);
@@ -282,13 +283,19 @@ fn format_tool_title(tool_name: &str, input: &serde_json::Value) -> String {
 
 /// Truncate a string to max length, adding "..." if truncated
 ///
-/// Note: Prepared for future interactive permission dialog implementation.
-#[allow(dead_code)]
+/// Uses char_indices for UTF-8 safe truncation.
 fn truncate_string(s: &str, max_len: usize) -> String {
     if s.len() <= max_len {
         s.to_string()
     } else {
-        format!("{}...", &s[..max_len.saturating_sub(3)])
+        // Find the last char boundary at or before max_len - 3 (for "...")
+        let boundary = s
+            .char_indices()
+            .map(|(i, _)| i)
+            .take_while(|&i| i <= max_len.saturating_sub(3))
+            .last()
+            .unwrap_or(0);
+        format!("{}...", &s[..boundary])
     }
 }
 
@@ -322,6 +329,16 @@ mod tests {
         assert_eq!(truncate_string("hello", 10), "hello");
         assert_eq!(truncate_string("hello world", 8), "hello...");
         assert_eq!(truncate_string("hi", 2), "hi");
+    }
+
+    #[test]
+    fn test_truncate_string_utf8() {
+        // Chinese characters are 3 bytes each; truncation must not panic
+        let chinese = "你好世界测试数据";
+        let result = truncate_string(chinese, 10);
+        // Should not panic and should end with "..."
+        assert!(result.ends_with("..."));
+        assert!(result.len() <= 13); // at most 10 bytes of chars + 3 for "..."
     }
 
     #[test]

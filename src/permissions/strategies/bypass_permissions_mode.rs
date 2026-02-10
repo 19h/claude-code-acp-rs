@@ -2,8 +2,8 @@
 //!
 //! This strategy allows all tools without any permission checks.
 
-use crate::session::{PermissionMode, ToolPermissionResult};
 use crate::permissions::strategies::PermissionModeStrategy;
+use crate::session::{PermissionMode, ToolPermissionResult};
 use serde_json::Value;
 
 /// Strategy for BypassPermissions mode - allow everything

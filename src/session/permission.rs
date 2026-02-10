@@ -293,12 +293,14 @@ impl PermissionHandler {
 
     /// Add a fine-grained allow rule based on tool call details
     /// This is used for "Always Allow" with specific parameters
-    pub fn add_allow_rule_for_tool_call(&self, tool_name: &str, tool_input: &serde_json::Value) {
+    pub async fn add_allow_rule_for_tool_call(
+        &self,
+        tool_name: &str,
+        tool_input: &serde_json::Value,
+    ) {
         if let Some(ref checker) = self.checker {
-            // Use try_write to avoid blocking - if lock is held, rule addition will be skipped
-            if let Ok(mut checker_write) = checker.try_write() {
-                checker_write.add_allow_rule_for_tool_call(tool_name, tool_input);
-            }
+            let mut checker_write = checker.write().await;
+            checker_write.add_allow_rule_for_tool_call(tool_name, tool_input);
         }
     }
 }
@@ -420,7 +422,10 @@ mod tests {
         let handler = PermissionHandler::with_mode(PermissionMode::Plan);
 
         match handler
-            .check_permission("Write", &json!({"file_path": "/tmp/test.txt", "content": "test"}))
+            .check_permission(
+                "Write",
+                &json!({"file_path": "/tmp/test.txt", "content": "test"}),
+            )
             .await
         {
             ToolPermissionResult::Blocked { .. } => {}

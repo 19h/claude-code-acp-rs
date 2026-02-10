@@ -117,10 +117,7 @@ impl SessionManager {
     ///
     /// This properly cleans up all child processes for all sessions
     /// to prevent zombie processes.
-    #[instrument(
-        name = "manager_clear",
-        skip(self),
-    )]
+    #[instrument(name = "manager_clear", skip(self))]
     pub async fn clear(&self) {
         let session_ids = self.session_ids();
         for session_id in session_ids {

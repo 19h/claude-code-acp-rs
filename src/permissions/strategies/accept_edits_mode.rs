@@ -3,8 +3,8 @@
 //! This strategy auto-approves ALL tools, behaving identically to BypassPermissions.
 //! It's compatible with root user environments where BypassPermissions cannot be used.
 
-use crate::session::{PermissionMode, ToolPermissionResult};
 use crate::permissions::strategies::PermissionModeStrategy;
+use crate::session::{PermissionMode, ToolPermissionResult};
 use serde_json::Value;
 
 /// Strategy for AcceptEdits mode - auto-approve all tools

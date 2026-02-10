@@ -711,24 +711,71 @@ async fn run_acp_server() -> Result<(), sacp::Error> {
             },
             sacp::on_receive_notification!(),
         )
-        // Handle unknown messages
+        // Handle unknown messages and unstable protocol methods
         .on_receive_message(
-            async move |message: MessageCx, connection_cx: JrConnectionCx<AgentToClient>| {
-                let method = message.message().method.clone();
-                let span = tracing::warn_span!(
-                    "handle_unknown_message",
-                    method = ?method,
-                );
+            {
+                let config = agent.config().clone();
+                let sessions = agent.sessions().clone();
+                async move |message: MessageCx, connection_cx: JrConnectionCx<AgentToClient>| {
+                    let method = message.method().to_string();
+                    let span = tracing::info_span!(
+                        "handle_message",
+                        method = ?method,
+                    );
 
-                async {
-                    tracing::warn!("Received unknown message: {:?}", method);
-                    message.respond_with_error(
-                        sacp::util::internal_error("Unknown method"),
-                        connection_cx,
-                    )
+                    async {
+                        // Route unstable protocol methods that sacp doesn't know about
+                        match method.as_str() {
+                            "session/set_model" => {
+                                dispatch_unstable_request(message, |params| async {
+                                    let request: agent_client_protocol_schema::SetSessionModelRequest =
+                                        serde_json::from_value(params)?;
+                                    let response = handlers::handle_set_session_model(request, &sessions).await
+                                        .map_err(|e| anyhow::anyhow!("{}", e))?;
+                                    Ok(serde_json::to_value(response)?)
+                                }).await
+                            }
+                            "session/fork" => {
+                                let cx = connection_cx.clone();
+                                dispatch_unstable_request(message, |params| async {
+                                    let request: agent_client_protocol_schema::ForkSessionRequest =
+                                        serde_json::from_value(params)?;
+                                    let response = handlers::handle_fork_session(request, &config, &sessions, cx)
+                                        .map_err(|e| anyhow::anyhow!("{}", e))?;
+                                    Ok(serde_json::to_value(response)?)
+                                }).await
+                            }
+                            "session/resume" => {
+                                let cx = connection_cx.clone();
+                                dispatch_unstable_request(message, |params| async {
+                                    let request: agent_client_protocol_schema::ResumeSessionRequest =
+                                        serde_json::from_value(params)?;
+                                    let response = handlers::handle_resume_session(request, &config, &sessions, cx)
+                                        .map_err(|e| anyhow::anyhow!("{}", e))?;
+                                    Ok(serde_json::to_value(response)?)
+                                }).await
+                            }
+                            "session/list" => {
+                                dispatch_unstable_request(message, |params| async move {
+                                    let request: agent_client_protocol_schema::ListSessionsRequest =
+                                        serde_json::from_value(params)?;
+                                    let response = handlers::handle_list_sessions(request)
+                                        .map_err(|e| anyhow::anyhow!("{}", e))?;
+                                    Ok(serde_json::to_value(response)?)
+                                }).await
+                            }
+                            _ => {
+                                tracing::warn!("Received unknown message: {:?}", method);
+                                message.respond_with_error(
+                                    sacp::util::internal_error("Unknown method"),
+                                    connection_cx,
+                                )
+                            }
+                        }
+                    }
+                    .instrument(span)
+                    .await
                 }
-                .instrument(span)
-                .await
             },
             sacp::on_receive_message!(),
         )
@@ -756,4 +803,31 @@ async fn run_acp_server() -> Result<(), sacp::Error> {
                 "ACP server shutting down gracefully"
             );
         })
+}
+
+/// Dispatch an unstable protocol request.
+///
+/// Extracts the params from the untyped MessageCx, passes them to the handler,
+/// and sends the response back. The handler is responsible for deserializing the
+/// params into the expected type and returning a serialized response.
+async fn dispatch_unstable_request<Fut>(
+    message: MessageCx,
+    handler: impl FnOnce(serde_json::Value) -> Fut,
+) -> Result<(), sacp::Error>
+where
+    Fut: std::future::Future<Output = Result<serde_json::Value, anyhow::Error>>,
+{
+    match message {
+        MessageCx::Request(untyped, request_cx) => match handler(untyped.params.clone()).await {
+            Ok(response_value) => request_cx.respond(response_value),
+            Err(e) => {
+                tracing::error!(error = %e, "Unstable handler error");
+                request_cx.respond_with_error(sacp::util::internal_error(e.to_string()))
+            }
+        },
+        MessageCx::Notification(_) => {
+            tracing::warn!("Received notification for request-only method");
+            Ok(())
+        }
+    }
 }

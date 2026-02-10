@@ -7,7 +7,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::process::Stdio;
 use tokio::process::Command;
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 
 use super::base::Tool;
 use crate::mcp::registry::{ToolContext, ToolResult};
@@ -354,7 +354,8 @@ impl Tool for GrepTool {
             let offset = params.offset.unwrap_or(0);
             let head_limit = params.head_limit.unwrap_or(DEFAULT_HEAD_LIMIT);
 
-            let (result, was_truncated) = Self::process_output_with_limits(&stdout, offset, head_limit);
+            let (result, was_truncated) =
+                Self::process_output_with_limits(&stdout, offset, head_limit);
 
             // Build final result
             let result = if result.is_empty() {

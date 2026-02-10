@@ -6,8 +6,8 @@
 
 use clap::Parser;
 use claude_code_acp::{cli::Cli, run_acp_with_cli, shutdown_otel};
-use tokio::signal;
 use std::io::IsTerminal;
+use tokio::signal;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

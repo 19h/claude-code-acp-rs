@@ -5,8 +5,8 @@
 //! the user should be able to explore and write plans, but not make changes
 //! to the codebase.
 
-use crate::session::{PermissionMode, ToolPermissionResult};
 use crate::permissions::strategies::PermissionModeStrategy;
+use crate::session::{PermissionMode, ToolPermissionResult};
 use crate::utils::is_plans_directory_path;
 use serde_json::Value;
 
@@ -21,17 +21,11 @@ impl PermissionModeStrategy for PlanModeStrategy {
 
     fn should_auto_approve(&self, tool_name: &str, _tool_input: &Value) -> bool {
         // Auto-approve read operations
-        matches!(
-            tool_name,
-            "Read" | "Glob" | "Grep" | "LS" | "NotebookRead"
-        )
+        matches!(tool_name, "Read" | "Glob" | "Grep" | "LS" | "NotebookRead")
     }
 
     fn is_tool_blocked(&self, tool_name: &str, tool_input: &Value) -> Option<String> {
-        let is_write_operation = matches!(
-            tool_name,
-            "Edit" | "Write" | "Bash" | "NotebookEdit"
-        );
+        let is_write_operation = matches!(tool_name, "Edit" | "Write" | "Bash" | "NotebookEdit");
 
         if !is_write_operation {
             return None; // Read operations are allowed
@@ -83,7 +77,12 @@ mod tests {
 
     fn home_plans_path() -> String {
         let home = dirs::home_dir().unwrap();
-        home.join(".claude").join("plans").join("test.md").to_str().unwrap().to_string()
+        home.join(".claude")
+            .join("plans")
+            .join("test.md")
+            .to_str()
+            .unwrap()
+            .to_string()
     }
 
     #[test]
@@ -124,10 +123,7 @@ mod tests {
     #[test]
     fn test_blocks_bash() {
         let strategy = PlanModeStrategy;
-        let result = strategy.is_tool_blocked(
-            "Bash",
-            &json!({"command": "echo test"}),
-        );
+        let result = strategy.is_tool_blocked("Bash", &json!({"command": "echo test"}));
         assert!(result.is_some());
         assert!(result.unwrap().contains("not allowed in Plan mode"));
     }

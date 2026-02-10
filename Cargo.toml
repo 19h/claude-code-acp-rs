@@ -29,13 +29,21 @@ path = "src/main.rs"
 sacp = "10.1.0"
 
 # Re-export agent-client-protocol-schema types for unstable features
-agent-client-protocol-schema = { version = "0.10.7", features = ["unstable_session_model"] }
+# Note: sacp 10.1.0 pulls in agent-client-protocol-schema without unstable features,
+# but our [patch.crates-io] overrides it with the local vendor version that has all features enabled.
+agent-client-protocol-schema = { version = "0.10.8", features = [
+    "unstable_session_model",
+    "unstable_session_fork",
+    "unstable_session_resume",
+    "unstable_session_list",
+    "unstable_session_usage",
+] }
 
 # Claude Agent SDK
 # 开发阶段：使用本地 vendors 目录中的 SDK
 # claude-code-agent-sdk = { path = "vendors/claude-code-agent-sdk", version = "0.1.36" }
 # 发布阶段：恢复为 crates.io 版本
-claude-code-agent-sdk = "0.1.36"
+claude-code-agent-sdk = { version = "0.1.37", features = [] }
 
 # Async runtime
 tokio = { version = "1.48", features = [
@@ -75,7 +83,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 # UUID generation
-uuid = { version = "1.19", features = ["v4"] }
+uuid = { version = "1.20", features = ["v4"] }
 
 # Home directory detection
 dirs = "6.0"
@@ -90,7 +98,7 @@ globset = "0.4"
 walkdir = "2.5"
 
 # Regular expressions (for rule parsing)
-regex = "1.10"
+regex = "1.12"
 
 # Lazy static initialization
 once_cell = "1.20"
@@ -115,6 +123,7 @@ opentelemetry-otlp = { version = "0.31", features = [
     "http-proto",
 ], optional = true }
 tracing-opentelemetry = { version = "0.32", optional = true }
+base64 = "0.22.1"
 
 # MCP support (optional, for future use)
 # rmcp = { version = "0.8", features = ["server", "transport-io"], optional = true }
@@ -122,11 +131,11 @@ tracing-opentelemetry = { version = "0.32", optional = true }
 [dev-dependencies]
 tokio-test = "0.4"
 pretty_assertions = "1"
-tempfile = "3"
+tempfile = "3.25"
 serial_test = "3"
 
 [features]
-default = ["otel", "sacp-flush"]
+default = ["otel", "sacp-flush", "bundled-cli"]
 # mcp = ["rmcp"]
 otel = [
     "opentelemetry",
@@ -137,6 +146,9 @@ otel = [
 # Enable flush mechanism from patched sacp (enabled by default during development)
 # When using official sacp, disable this feature: --no-default-features
 sacp-flush = []
+# Enable bundled CLI: build.rs automatically downloads Claude Code CLI binary
+# Disable in restricted network environments: --no-default-features --features otel,sacp-flush
+bundled-cli = ["claude-code-agent-sdk/bundled-cli"]
 # Enable verbose debug logging for troubleshooting
 verbose-debug = []
 
@@ -158,12 +170,10 @@ verbose-debug = []
 #   [patch.crates-io]
 #   sacp = { git = "https://github.com/soddygo/symposium-acp.git", branch = "main" }
 #
+# Patch agent-client-protocol-schema to use local version with unstable features
+# This ensures sacp (and all other crates) use our local version with features enabled
 [patch.crates-io]
-# Patch sacp to use fork with flush mechanism during development
-sacp = { git = "https://github.com/soddygo/symposium-acp.git", branch = "main" }
-
-# Patch agent-client-protocol-schema to use local version with unstable_session_model feature
-agent-client-protocol-schema = { path = "vendors/agent-client-protocol", features = ["unstable_session_model"] }
+agent-client-protocol-schema = { path = "vendors/agent-client-protocol" }
 
 [lints.rust]
 future_incompatible = { level = "warn", priority = -1 }
@@ -196,3 +206,8 @@ manual_non_exhaustive = "allow"
 match_same_arms = "allow"
 redundant_closure_for_method_calls = "allow"
 unused_self = "allow"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"

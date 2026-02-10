@@ -111,6 +111,9 @@ pub struct NewSessionMeta {
 
     /// Whether to disable built-in tools
     pub disable_built_in_tools: bool,
+
+    /// Whether this is a fork (creates independent session from existing conversation)
+    pub fork_session: bool,
 }
 
 impl NewSessionMeta {
@@ -128,6 +131,26 @@ impl NewSessionMeta {
                 }),
             }),
             disable_built_in_tools: false,
+            fork_session: false,
+        }
+    }
+
+    /// Create a NewSessionMeta with both resume and fork_session options
+    ///
+    /// This is used for `forkSession` where we want to fork from an existing
+    /// session, creating a new independent session that starts from the same
+    /// conversation state.
+    pub fn with_resume_and_fork(session_id: &str) -> Self {
+        Self {
+            system_prompt: None,
+            claude_code: Some(ClaudeCodeMeta {
+                options: Some(ClaudeCodeOptions {
+                    resume: Some(session_id.to_string()),
+                    max_thinking_tokens: None,
+                }),
+            }),
+            disable_built_in_tools: false,
+            fork_session: true,
         }
     }
 
@@ -152,6 +175,7 @@ impl NewSessionMeta {
                 .get("disableBuiltInTools")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false),
+            fork_session: false,
         }
     }
 
@@ -178,6 +202,11 @@ impl NewSessionMeta {
     /// Check if this session should resume from a previous session
     pub fn should_resume(&self) -> bool {
         self.get_resume_session_id().is_some()
+    }
+
+    /// Check if this session is a fork of another session
+    pub fn is_fork(&self) -> bool {
+        self.fork_session
     }
 }
 

@@ -15,30 +15,18 @@ pub trait PermissionModeStrategy: Send + Sync {
     ///
     /// Returns true if the tool can proceed immediately, false if it needs
     /// further checking or user approval.
-    fn should_auto_approve(
-        &self,
-        tool_name: &str,
-        tool_input: &Value,
-    ) -> bool;
+    fn should_auto_approve(&self, tool_name: &str, tool_input: &Value) -> bool;
 
     /// Check if a tool is explicitly blocked in this mode
     ///
     /// Returns Some(reason) if blocked, None if allowed.
-    fn is_tool_blocked(
-        &self,
-        tool_name: &str,
-        tool_input: &Value,
-    ) -> Option<String>;
+    fn is_tool_blocked(&self, tool_name: &str, tool_input: &Value) -> Option<String>;
 
     /// Perform comprehensive permission check
     ///
     /// Returns the final permission decision for this tool invocation.
     /// This method is called after settings rules are checked.
-    fn check_permission(
-        &self,
-        tool_name: &str,
-        tool_input: &Value,
-    ) -> ToolPermissionResult;
+    fn check_permission(&self, tool_name: &str, tool_input: &Value) -> ToolPermissionResult;
 }
 
 #[cfg(test)]

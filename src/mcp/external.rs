@@ -138,7 +138,8 @@ impl ExternalMcpServer {
 
         // Build the command using CommandWrap for process group support
         let mut cmd = CommandWrap::with_new(command, |c| {
-            let cmd = c.args(args)
+            let cmd = c
+                .args(args)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null());
@@ -193,7 +194,10 @@ impl ExternalMcpServer {
         );
 
         // Take stdin and stdout before wrapping
-        let stdin = wrapped_child.stdin().take().ok_or(ExternalMcpError::NoStdin)?;
+        let stdin = wrapped_child
+            .stdin()
+            .take()
+            .ok_or(ExternalMcpError::NoStdin)?;
         let stdout = wrapped_child
             .stdout()
             .take()
@@ -421,7 +425,9 @@ impl ExternalMcpServer {
             tokio::time::timeout(DEFAULT_REQUEST_TIMEOUT, self.send_request_internal(request))
                 .await;
 
-        if let Ok(inner_result) = result { inner_result } else {
+        if let Ok(inner_result) = result {
+            inner_result
+        } else {
             tracing::error!(
                 server_name = %self.name,
                 method = %method,
@@ -796,6 +802,10 @@ pub struct ExternalMcpManager {
     /// Using DashMap for lock-free concurrent access to different servers
     /// Using tokio::sync::Mutex to allow holding lock across .await points
     servers: DashMap<String, Arc<tokio::sync::Mutex<ExternalMcpServer>>>,
+    /// Cached tool schemas per server, populated at connect time.
+    /// This avoids locking each server mutex in `all_tools()`, which would
+    /// cause tools to disappear from the list while a server is busy.
+    tool_cache: DashMap<String, Vec<ToolSchema>>,
 }
 
 impl ExternalMcpManager {
@@ -803,6 +813,7 @@ impl ExternalMcpManager {
     pub fn new() -> Self {
         Self {
             servers: DashMap::new(),
+            tool_cache: DashMap::new(),
         }
     }
 
@@ -871,6 +882,18 @@ impl ExternalMcpManager {
             "MCP server tools available"
         );
 
+        // Cache tool schemas (with server-prefixed names) for lock-free access in all_tools()
+        let cached_tools: Vec<ToolSchema> = server
+            .tools()
+            .iter()
+            .map(|tool| ToolSchema {
+                name: format!("mcp__{}_{}", name, tool.name),
+                description: format!("[{}] {}", name, tool.description),
+                input_schema: tool.input_schema.clone(),
+            })
+            .collect();
+        self.tool_cache.insert(name.clone(), cached_tools);
+
         // Insert server into DashMap (no async needed)
         self.servers
             .insert(name, Arc::new(tokio::sync::Mutex::new(server)));
@@ -886,6 +909,7 @@ impl ExternalMcpManager {
         fields(server_name = %name)
     )]
     pub async fn disconnect(&self, name: &str) -> Result<(), ExternalMcpError> {
+        self.tool_cache.remove(name);
         if let Some((_, server_arc)) = self.servers.remove(name) {
             let mut server = server_arc.lock().await;
             server.cleanup().await?;
@@ -904,28 +928,14 @@ impl ExternalMcpManager {
     /// Get all available tools from all servers
     ///
     /// Tool names are prefixed with `mcp__<server>__`
+    /// Reads from cached tool schemas populated at connect time, so this
+    /// never blocks on server mutexes and tools remain visible even while
+    /// a server is busy executing a tool call.
     pub fn all_tools(&self) -> Vec<ToolSchema> {
         let mut tools = Vec::new();
 
-        for entry in &self.servers {
-            let server_name = entry.key();
-            let server = entry.value();
-            // Try to lock the mutex (non-blocking)
-            let Ok(server_guard) = server.try_lock() else {
-                tracing::warn!(
-                    server_name = %server_name,
-                    "MCP server is busy, skipping for tool listing"
-                );
-                continue; // Skip this server if lock is not available
-            };
-
-            for tool in server_guard.tools() {
-                tools.push(ToolSchema {
-                    name: format!("mcp__{}_{}", server_name, tool.name),
-                    description: format!("[{}] {}", server_name, tool.description),
-                    input_schema: tool.input_schema.clone(),
-                });
-            }
+        for entry in &self.tool_cache {
+            tools.extend(entry.value().iter().cloned());
         }
 
         tools
@@ -1015,7 +1025,9 @@ impl ExternalMcpManager {
             .filter_map(|entry| {
                 let server = entry.value();
                 // Try to lock the mutex (non-blocking)
-                if let Ok(guard) = server.try_lock() { Some(guard.stats()) } else {
+                if let Ok(guard) = server.try_lock() {
+                    Some(guard.stats())
+                } else {
                     tracing::warn!(
                         server_name = %entry.key(),
                         "MCP server is busy, skipping for stats"
@@ -1284,7 +1296,10 @@ mod tests {
 
         // Disconnecting a non-existent server should succeed (idempotent)
         let result = manager.disconnect("nonexistent-server").await;
-        assert!(result.is_ok(), "Disconnecting non-existent server should be OK");
+        assert!(
+            result.is_ok(),
+            "Disconnecting non-existent server should be OK"
+        );
 
         // Still no servers
         assert!(manager.server_names().is_empty());
@@ -1297,7 +1312,10 @@ mod tests {
 
         // Disconnecting a non-existent server should not error
         let result = manager.disconnect("nonexistent-server").await;
-        assert!(result.is_ok(), "Disconnecting non-existent server should be OK");
+        assert!(
+            result.is_ok(),
+            "Disconnecting non-existent server should be OK"
+        );
     }
 
     /// Test cleanup method on ExternalMcpServer directly

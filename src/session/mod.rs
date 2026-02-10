@@ -28,7 +28,7 @@ pub use permission_manager::{
     PendingPermissionRequest, PermissionManager, PermissionManagerDecision,
 };
 pub use permission_request::{PermissionOutcome, PermissionRequestBuilder};
-pub use prompt_manager::{PromptManager, PromptId, PromptTask};
+pub use prompt_manager::{PromptId, PromptManager, PromptTask};
 pub use session::{Session, stable_cache_key};
 pub use usage::UsageTracker;
 pub use wrapped_child::WrappedChild;

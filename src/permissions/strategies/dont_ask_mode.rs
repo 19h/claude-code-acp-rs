@@ -3,8 +3,8 @@
 //! This strategy denies tools that aren't pre-approved by settings rules.
 //! No user prompts are shown.
 
-use crate::session::{PermissionMode, ToolPermissionResult};
 use crate::permissions::strategies::PermissionModeStrategy;
+use crate::session::{PermissionMode, ToolPermissionResult};
 use serde_json::Value;
 
 /// Strategy for DontAsk mode - deny unless pre-approved by settings
