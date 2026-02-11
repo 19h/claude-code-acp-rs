@@ -305,6 +305,9 @@ impl Session {
             // 禁止 CLI 加载 ~/.claude/settings.json 等文件系统配置，
             // 避免用户个人 settings 中的 env.ANTHROPIC_BASE_URL 覆盖代理 URL
             .setting_sources(vec![])
+            // Enable automatic CLI download for npm/binary distribution users
+            // who don't have Claude Code CLI pre-installed
+            .auto_download_cli(true)
             .build();
 
         // Debug: Verify can_use_tool is set

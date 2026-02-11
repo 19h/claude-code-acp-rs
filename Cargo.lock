@@ -5,6 +5,8 @@ version = 4
 [[package]]
 name = "agent-client-protocol-schema"
 version = "0.10.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "44bc1fef9c32f03bce2ab44af35b6f483bfd169bf55cc59beeb2e3b1a00ae4d1"
 dependencies = [
  "anyhow",
  "derive_more",
@@ -263,7 +265,7 @@ checksum = "c3e64b0cc0439b12df2fa678eae89a1c56a529fd067a9115f7827f1fffd22b32"
 
 [[package]]
 name = "claude-code-acp-rs"
-version = "0.1.18"
+version = "0.1.19"
 dependencies = [
  "agent-client-protocol-schema",
  "anyhow",
@@ -306,9 +308,9 @@ dependencies = [
 
 [[package]]
 name = "claude-code-agent-sdk"
-version = "0.1.37"
+version = "0.1.38"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bbe0a92573dfb65f6262f078730208092dbc97a4b88144ffdae7d06581f704db"
+checksum = "1c31b74918ca30da17c92badeaae74befe99de470aa3afe3505e57a642db3c23"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -317,6 +319,7 @@ dependencies = [
  "dashmap",
  "dirs",
  "futures",
+ "libc",
  "paste",
  "path-absolutize",
  "pin-project",

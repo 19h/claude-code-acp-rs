@@ -1,6 +1,6 @@
 [package]
 name = "claude-code-acp-rs"
-version = "0.1.18"
+version = "0.1.19"
 authors = ["guochao.song <soddygo@qq.com>"]
 edition = "2024"
 rust-version = "1.90"
@@ -12,7 +12,7 @@ license = "MIT"
 readme = "README.md"
 keywords = ["claude", "acp", "agent", "ai", "anthropic"]
 categories = ["development-tools", "api-bindings", "asynchronous"]
-include = ["src/**/*.rs", "Cargo.toml", "LICENSE", "README.md"]
+include = ["src/**/*.rs", "build.rs", "Cargo.toml", "LICENSE", "README.md"]
 
 [lib]
 name = "claude_code_acp"
@@ -43,7 +43,7 @@ agent-client-protocol-schema = { version = "0.10.8", features = [
 # 开发阶段：使用本地 vendors 目录中的 SDK
 # claude-code-agent-sdk = { path = "vendors/claude-code-agent-sdk", version = "0.1.36" }
 # 发布阶段：恢复为 crates.io 版本
-claude-code-agent-sdk = { version = "0.1.37", features = [] }
+claude-code-agent-sdk = { version = "0.1.38", features = [] }
 
 # Async runtime
 tokio = { version = "1.48", features = [
@@ -151,29 +151,6 @@ sacp-flush = []
 bundled-cli = ["claude-code-agent-sdk/bundled-cli"]
 # Enable verbose debug logging for troubleshooting
 verbose-debug = []
-
-# ============================================================================
-# Patch Configuration - Development Only
-# ============================================================================
-#
-# This patch section is used during development to use a fork of sacp with
-# the flush mechanism fix (MESSAGE_ORDERING_ISSUE.md).
-#
-# IMPORTANT: [patch] sections are NOT included when publishing to crates.io!
-# This means:
-#   - Development: Uses your fork with flush mechanism
-#   - Production/End users: Uses official sacp from crates.io
-#
-# When your PR is merged into official sacp, you can remove this section.
-#
-# Users who want the flush fix can add this to their Cargo.toml:
-#   [patch.crates-io]
-#   sacp = { git = "https://github.com/soddygo/symposium-acp.git", branch = "main" }
-#
-# Patch agent-client-protocol-schema to use local version with unstable features
-# This ensures sacp (and all other crates) use our local version with features enabled
-[patch.crates-io]
-agent-client-protocol-schema = { path = "vendors/agent-client-protocol" }
 
 [lints.rust]
 future_incompatible = { level = "warn", priority = -1 }
