@@ -17,7 +17,7 @@ use claude_code_agent_sdk::types::config::PermissionMode as SdkPermissionMode;
 use claude_code_agent_sdk::types::mcp::McpSdkServerConfig;
 use claude_code_agent_sdk::{
     ClaudeAgentOptions, ClaudeClient, HookEvent, HookMatcher, McpServerConfig, McpServers,
-    SystemPrompt, SystemPromptPreset,
+    SettingSource, SystemPrompt, SystemPromptPreset,
 };
 use sacp::JrConnectionCx;
 use sacp::link::AgentToClient;
@@ -302,9 +302,9 @@ impl Session {
             .permission_mode(SdkPermissionMode::AcceptEdits)
             // Using circular buffer (ringbuf) - auto-recycles old data, no need for large buffer
             .max_buffer_size(20 * 1024 * 1024) // 20MB 缓冲区
-            // 禁止 CLI 加载 ~/.claude/settings.json 等文件系统配置，
-            // 避免用户个人 settings 中的 env.ANTHROPIC_BASE_URL 覆盖代理 URL
-            .setting_sources(vec![])
+            // 允许读取用户级 settings (for API keys, etc.)
+            // Agent's env variables (via options.env) will still take precedence
+            .setting_sources(vec![SettingSource::User])
             // Enable automatic CLI download for npm/binary distribution users
             // who don't have Claude Code CLI pre-installed
             .auto_download_cli(true)
@@ -1477,10 +1477,11 @@ mod tests {
     /// This validates that the SDK integration is properly wired up.
     #[test]
     fn test_bundled_cli_path_structure() {
-        use claude_code_agent_sdk::version::bundled_cli_path;
         use claude_code_agent_sdk::CLI_VERSION;
+        use claude_code_agent_sdk::version::bundled_cli_path;
 
-        let path = bundled_cli_path().expect("bundled_cli_path() should return Some on systems with HOME");
+        let path =
+            bundled_cli_path().expect("bundled_cli_path() should return Some on systems with HOME");
         let path_str = path.to_string_lossy();
 
         // Must contain the bundled directory structure

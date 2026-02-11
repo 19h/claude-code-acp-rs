@@ -35,6 +35,10 @@ use crate::session::{PermissionMode, SessionManager};
 use crate::terminal::TerminalClient;
 use crate::types::{AgentConfig, AgentError, NewSessionMeta};
 
+// Default model constants
+const DEFAULT_MODEL_ID: &str = "claude-sonnet-4-20250514";
+const DEFAULT_MODEL_DISPLAY_NAME: &str = "Default";
+
 /// Handle initialize request
 ///
 /// Returns the agent's capabilities and protocol version.
@@ -293,24 +297,33 @@ fn build_available_modes() -> Vec<SessionMode> {
 /// Returns model information including current model and available models.
 /// Dynamically builds the model list based on the currently configured model.
 ///
-/// Priority: config.model > ANTHROPIC_MODEL env var > "unknown" fallback
+/// Priority: config.model > ANTHROPIC_MODEL env var > Default (claude-sonnet-4-20250514)
 fn build_available_models(config: &AgentConfig) -> SessionModelState {
     // Get current model from config or environment
-    // Use "unknown" as fallback if no model is configured
+    // Use official default model as fallback
     let current_model_id = config
         .model
         .clone()
         .or_else(|| std::env::var("ANTHROPIC_MODEL").ok())
-        .unwrap_or_else(|| "unknown".to_string());
+        .unwrap_or_else(|| DEFAULT_MODEL_ID.to_string());
 
-    // Use raw model ID as display name (no formatting)
-    let display_name = current_model_id.clone();
+    // Use friendly display name for default model
+    let display_name = if config.model.is_none() && std::env::var("ANTHROPIC_MODEL").is_err() {
+        DEFAULT_MODEL_DISPLAY_NAME.to_string()
+    } else {
+        current_model_id.clone()
+    };
+
+    // Build description
+    let description = if display_name == DEFAULT_MODEL_DISPLAY_NAME {
+        format!("Default model ({})", DEFAULT_MODEL_ID)
+    } else {
+        format!("Current model: {}", current_model_id)
+    };
 
     // Build available models list with the current model
-    let available_models = vec![
-        ModelInfo::new(current_model_id.clone(), display_name)
-            .description(format!("Current model: {}", current_model_id)),
-    ];
+    let available_models =
+        vec![ModelInfo::new(current_model_id.clone(), display_name).description(description)];
 
     SessionModelState::new(current_model_id, available_models)
 }
@@ -427,22 +440,38 @@ pub async fn handle_prompt(
 
     // Connect external MCP servers first (if any)
     // This ensures external tools are available when Claude CLI starts
+    let external_mcp_timeout = tokio::time::Duration::from_secs(5);
     let external_mcp_start = Instant::now();
-    if let Err(e) = session.connect_external_mcp_servers().await {
-        tracing::error!(
-            session_id = %session_id,
-            error = %e,
-            "Error connecting to external MCP servers"
-        );
-        // Continue anyway - external MCP failures shouldn't block the session
-    }
-    let external_mcp_elapsed = external_mcp_start.elapsed();
-    if external_mcp_elapsed.as_millis() > 0 {
-        tracing::debug!(
-            session_id = %session_id,
-            external_mcp_elapsed_ms = external_mcp_elapsed.as_millis(),
-            "External MCP servers connection completed"
-        );
+
+    match tokio::time::timeout(external_mcp_timeout, session.connect_external_mcp_servers()).await {
+        Ok(Ok(())) => {
+            let elapsed = external_mcp_start.elapsed();
+            if elapsed.as_millis() > 100 {
+                tracing::info!(
+                    session_id = %session_id,
+                    external_mcp_elapsed_ms = elapsed.as_millis(),
+                    "External MCP servers connected successfully"
+                );
+            }
+        }
+        Ok(Err(e)) => {
+            let elapsed = external_mcp_start.elapsed();
+            tracing::error!(
+                session_id = %session_id,
+                error = %e,
+                elapsed_ms = elapsed.as_millis(),
+                "Error connecting to external MCP servers"
+            );
+            // Continue anyway - external MCP failures shouldn't block the session
+        }
+        Err(_) => {
+            tracing::error!(
+                session_id = %session_id,
+                timeout_secs = external_mcp_timeout.as_secs(),
+                "External MCP connection timed out, continuing without external tools"
+            );
+            // Continue anyway - timeout shouldn't block the session
+        }
     }
 
     // Connect if not already connected
@@ -524,28 +553,17 @@ pub async fn handle_prompt(
                 tracing::info!(
                     session_id = %session_id,
                     request_id = %request_id,
-                    "Cancel signal received from MCP notification, interrupting CLI"
+                    "Cancel signal received from MCP notification"
                 );
-                // Send interrupt signal to Claude CLI
                 if let Err(e) = client.interrupt().await {
                     tracing::warn!(
                         session_id = %session_id,
                         error = %e,
-                        "Failed to send interrupt signal to Claude CLI"
+                        "Failed to send interrupt signal"
                     );
                 }
-                // Set cancelled flag
                 session.cancel().await;
-
-                // KEY FIX: Synchronous drain - wait until queue is fully empty (50ms silence)
-                // This prevents old messages from leaking into the next prompt
                 drain_messages_synchronously(session_id, &request_id, &mut stream).await;
-
-                tracing::info!(
-                    session_id = %session_id,
-                    request_id = %request_id,
-                    "Cancel completed, queue is clean"
-                );
                 break;
             }
             Err(broadcast::error::TryRecvError::Empty) => {
@@ -554,35 +572,25 @@ pub async fn handle_prompt(
             Err(broadcast::error::TryRecvError::Closed) => {
                 tracing::warn!(
                     session_id = %session_id,
-                    "Cancel channel closed, no longer listening for cancel signals"
+                    "Cancel channel closed unexpectedly"
                 );
                 break;
             }
             Err(broadcast::error::TryRecvError::Lagged(_)) => {
-                // Lagged means we missed some messages, but the most recent value is available
-                // Treat this as a cancel signal
                 tracing::info!(
                     session_id = %session_id,
                     request_id = %request_id,
-                    "Cancel signal lagged, treating as cancel notification"
+                    "Cancel signal lagged, treating as cancel"
                 );
                 if let Err(e) = client.interrupt().await {
                     tracing::warn!(
                         session_id = %session_id,
                         error = %e,
-                        "Failed to send interrupt signal to Claude CLI"
+                        "Failed to send interrupt signal"
                     );
                 }
                 session.cancel().await;
-
-                // Same synchronous drain for lagged cancel
                 drain_messages_synchronously(session_id, &request_id, &mut stream).await;
-
-                tracing::info!(
-                    session_id = %session_id,
-                    request_id = %request_id,
-                    "Lagged cancel completed, queue is clean"
-                );
                 break;
             }
         }
@@ -593,8 +601,6 @@ pub async fn handle_prompt(
             tracing::info!(
                 session_id = %session_id,
                 elapsed_ms = elapsed.as_millis(),
-                message_count = message_count,
-                notification_count = notification_count,
                 "Prompt cancelled by user"
             );
             session.clear_converter_request_id().await;
@@ -603,8 +609,9 @@ pub async fn handle_prompt(
         }
 
         // Process next message from stream with timeout
+        // Use 1000ms timeout (10x longer than original) to reduce overhead while maintaining safety
         let msg_result =
-            tokio::time::timeout(tokio::time::Duration::from_millis(100), stream.next()).await;
+            tokio::time::timeout(tokio::time::Duration::from_millis(1000), stream.next()).await;
 
         match msg_result {
             Ok(Some(Ok(message))) => {
@@ -658,6 +665,11 @@ pub async fn handle_prompt(
             }
             Ok(None) => {
                 // Stream ended normally
+                tracing::debug!(
+                    session_id = %session_id,
+                    message_count = message_count,
+                    "Message stream ended"
+                );
                 break;
             }
             Ok(Some(Err(e))) => {
@@ -672,6 +684,7 @@ pub async fn handle_prompt(
             }
             Err(_) => {
                 // Timeout - continue loop to check cancel signal again
+                // This ensures responsiveness even when stream is slow
             }
         }
     }
@@ -1892,7 +1905,16 @@ mod tests {
         };
         let model_state = build_available_models(&config);
 
-        assert_eq!(model_state.current_model_id.0, "unknown".into());
-        assert_eq!(model_state.available_models[0].name, "unknown");
+        // Should use DEFAULT_MODEL_ID internally
+        assert_eq!(
+            model_state.current_model_id.0,
+            "claude-sonnet-4-20250514".into()
+        );
+        // But display "Default" as name
+        assert_eq!(model_state.available_models[0].name, "Default");
+        assert_eq!(
+            model_state.available_models[0].description,
+            Some("Default model (claude-sonnet-4-20250514)".into())
+        );
     }
 }

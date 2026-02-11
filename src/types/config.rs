@@ -267,6 +267,15 @@ impl AgentConfig {
             "Configuration loaded (priority: env > settings.{{top-level, env}} > default)"
         );
 
+        // Warn if no model is configured
+        if config.model.is_none() {
+            tracing::warn!(
+                "No model configured. Using default: {}. \
+                 Set ANTHROPIC_MODEL environment variable or configure 'model' in settings.json",
+                "claude-sonnet-4-20250514"
+            );
+        }
+
         config
     }
 
@@ -289,10 +298,22 @@ impl AgentConfig {
         if let Some(ref url) = self.base_url {
             env.insert("ANTHROPIC_BASE_URL".to_string(), url.clone());
         }
-        // Pass as ANTHROPIC_API_KEY (standard name for Claude CLI)
+
+        // Pass API key/auth token
+        // Priority: self.api_key > ANTHROPIC_API_KEY env var > ANTHROPIC_AUTH_TOKEN env var
         if let Some(ref key) = self.api_key {
             env.insert("ANTHROPIC_API_KEY".to_string(), key.clone());
+        } else {
+            // If api_key is not in config, check process environment variables
+            // This handles settings.env where env vars are set but not parsed into config fields
+            if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
+                env.insert("ANTHROPIC_API_KEY".to_string(), key);
+            } else if let Ok(token) = std::env::var("ANTHROPIC_AUTH_TOKEN") {
+                // Pass as ANTHROPIC_API_KEY for compatibility with CLI
+                env.insert("ANTHROPIC_API_KEY".to_string(), token);
+            }
         }
+
         if let Some(ref model) = self.model {
             env.insert("ANTHROPIC_MODEL".to_string(), model.clone());
         }

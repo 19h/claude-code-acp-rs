@@ -432,12 +432,29 @@ impl NotificationConverter {
     /// Convert a result message
     fn convert_result_message(
         &self,
-        _result: &ResultMessage,
-        _session_id: &SessionId,
+        result: &ResultMessage,
+        session_id: &SessionId,
     ) -> Vec<SessionNotification> {
-        // Result messages update usage statistics but don't typically
-        // generate notifications (the prompt response handles completion)
-        vec![]
+        // If there's an error, send it as a notification to inform the client
+        if result.is_error {
+            let error_text = result
+                .result
+                .as_deref()
+                .unwrap_or("An error occurred during execution");
+
+            let notification = SessionNotification::new(
+                session_id.clone(),
+                SessionUpdate::AgentMessageChunk(ContentChunk::new(AcpContentBlock::Text(
+                    TextContent::new(format!("\n❌ Error: {}\n", error_text)),
+                ))),
+            );
+
+            vec![notification]
+        } else {
+            // Result messages update usage statistics but don't typically
+            // generate notifications (the prompt response handles completion)
+            vec![]
+        }
     }
 
     /// Cache a tool use entry
