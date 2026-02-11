@@ -14,6 +14,15 @@ mod bundled_cli {
         let manifest_dir = PathBuf::from(
             std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR must be set"),
         );
+
+        // Skip during `cargo publish` verification — Cargo forbids build scripts
+        // from modifying the source directory. During verification the manifest is
+        // copied into target/package/, so we detect that path component.
+        let manifest_str = manifest_dir.to_string_lossy();
+        if manifest_str.contains("target/package/") || manifest_str.contains("target\\package\\") {
+            return;
+        }
+
         let output_dir = manifest_dir.join("bundled-cli");
         let cli_name = if cfg!(target_os = "windows") {
             "claude.exe"
