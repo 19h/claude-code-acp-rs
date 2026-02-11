@@ -1002,8 +1002,12 @@ impl Session {
     /// Updates the model ID used for subsequent prompts. Also updates the
     /// underlying SDK client's model option.
     pub async fn set_model(&self, model_id: String) {
-        let mut model = self.current_model.write().await;
-        *model = Some(model_id.clone());
+        // Update session model
+        {
+            let mut model = self.current_model.write().await;
+            *model = Some(model_id.clone());
+        } // Release write lock before accessing client
+
         tracing::info!(model_id = %model_id, "Session model updated");
 
         // Also set model on the SDK client for next prompt
@@ -1048,7 +1052,7 @@ impl Session {
     /// Should be called at the end of each prompt to prevent unbounded
     /// memory growth from accumulated tool use entries.
     pub async fn clear_converter_cache(&self) {
-        let converter = self.converter.read().await;
+        let converter = self.converter.write().await;
         converter.clear_cache();
     }
 

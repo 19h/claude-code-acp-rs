@@ -527,7 +527,6 @@ pub async fn handle_prompt(
     // Get read access to client for streaming responses
     let client = session.client().await;
     let mut stream = client.receive_response();
-    let converter = session.converter().await;
     let mut cancel_rx = session.cancel_receiver();
 
     // NOTE: drain_leftover_messages() is no longer needed because the SDK now
@@ -640,7 +639,9 @@ pub async fn handle_prompt(
                 }
 
                 // Convert SDK message to ACP notifications
+                let converter = session.converter().await;
                 let notifications = converter.convert_message(&message, session_id);
+                drop(converter); // Release read lock immediately
                 let batch_size = notifications.len();
 
                 // Send each notification
@@ -726,11 +727,16 @@ pub async fn handle_prompt(
     //
     flush::ensure_notifications_flushed(&connection_cx, notification_count).await;
 
+    tracing::debug!(session_id = %session_id, "Flush completed, clearing converter state");
+
     // Clean up converter state for this prompt:
     // - Clear request_id so it doesn't leak into future prompts
     // - Clear tool_use_cache to prevent unbounded memory growth
     session.clear_converter_request_id().await;
+    tracing::debug!(session_id = %session_id, "Converter request_id cleared");
+
     session.clear_converter_cache().await;
+    tracing::debug!(session_id = %session_id, "Converter cache cleared");
 
     // Determine stop reason based on cancellation state and ResultMessage
     // Reference: vendors/claude-code-acp/src/acp-agent.ts lines 286-323
@@ -738,6 +744,8 @@ pub async fn handle_prompt(
         tracing::info!(session_id = %session_id, "Returning Cancelled stop reason");
         return Ok(PromptResponse::new(StopReason::Cancelled));
     }
+
+    tracing::debug!(session_id = %session_id, "Determining stop reason");
 
     if let Some(ref result) = last_result {
         // Check user cancelled flag first (set by session/cancel notification)
