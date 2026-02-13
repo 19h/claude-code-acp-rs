@@ -1,6 +1,6 @@
 [package]
 name = "claude-code-acp-rs"
-version = "0.1.21"
+version = "0.1.22"
 authors = ["guochao.song <soddygo@qq.com>"]
 edition = "2024"
 rust-version = "1.90"
@@ -43,7 +43,7 @@ agent-client-protocol-schema = { version = "0.10.8", features = [
 # 开发阶段：使用本地 vendors 目录中的 SDK
 # claude-code-agent-sdk = { path = "vendors/claude-code-agent-sdk", version = "0.1.36" }
 # 发布阶段：恢复为 crates.io 版本
-claude-code-agent-sdk = { version = "0.1.38", features = [] }
+claude-code-agent-sdk = { version = "0.1.39", features = [] }
 
 # Async runtime
 tokio = { version = "1.48", features = [

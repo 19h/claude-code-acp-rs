@@ -265,7 +265,7 @@ checksum = "c3e64b0cc0439b12df2fa678eae89a1c56a529fd067a9115f7827f1fffd22b32"
 
 [[package]]
 name = "claude-code-acp-rs"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "agent-client-protocol-schema",
  "anyhow",
@@ -308,9 +308,9 @@ dependencies = [
 
 [[package]]
 name = "claude-code-agent-sdk"
-version = "0.1.38"
+version = "0.1.39"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1c31b74918ca30da17c92badeaae74befe99de470aa3afe3505e57a642db3c23"
+checksum = "0ad71978fd4bd1add579afa5d805752f0e5a3316aa182e4ee8c5b6e37565295a"
 dependencies = [
  "anyhow",
  "async-stream",
