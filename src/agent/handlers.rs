@@ -11,8 +11,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use futures::{Stream, StreamExt};
-use sacp::JrConnectionCx;
-use sacp::link::AgentToClient;
+use sacp::Client;
+use sacp::ConnectionTo;
 use sacp::schema::{
     AgentCapabilities, ContentBlock, CurrentModeUpdate, Implementation, InitializeRequest,
     InitializeResponse, LoadSessionRequest, LoadSessionResponse, NewSessionRequest,
@@ -107,7 +107,7 @@ pub async fn handle_new_session(
     request: NewSessionRequest,
     config: &AgentConfig,
     sessions: &Arc<SessionManager>,
-    connection_cx: JrConnectionCx<AgentToClient>,
+    connection_cx: ConnectionTo<Client>,
 ) -> Result<NewSessionResponse, AgentError> {
     let start_time = Instant::now();
 
@@ -336,7 +336,7 @@ fn build_available_models(config: &AgentConfig) -> SessionModelState {
 #[allow(clippy::unnecessary_wraps)]
 fn send_available_commands_update(
     session_id: &str,
-    connection_cx: JrConnectionCx<AgentToClient>,
+    connection_cx: ConnectionTo<Client>,
 ) -> Result<(), AgentError> {
     let commands = filter_commands(get_predefined_commands());
     let command_count = commands.len();
@@ -388,7 +388,7 @@ pub async fn handle_prompt(
     request: PromptRequest,
     _config: &AgentConfig,
     sessions: &Arc<SessionManager>,
-    connection_cx: JrConnectionCx<AgentToClient>,
+    connection_cx: ConnectionTo<Client>,
     cancel_token: CancellationToken,
 ) -> Result<PromptResponse, AgentError> {
     let prompt_start = Instant::now();
@@ -835,7 +835,7 @@ pub async fn handle_prompt(
 
 /// Send a notification via the connection context
 fn send_notification(
-    cx: &JrConnectionCx<AgentToClient>,
+    cx: &ConnectionTo<Client>,
     notification: SessionNotification,
 ) -> Result<(), sacp::Error> {
     cx.send_notification(notification)
@@ -855,7 +855,7 @@ fn send_notification(
 pub async fn handle_set_mode(
     request: SetSessionModeRequest,
     sessions: &Arc<SessionManager>,
-    connection_cx: JrConnectionCx<AgentToClient>,
+    connection_cx: ConnectionTo<Client>,
 ) -> Result<SetSessionModeResponse, AgentError> {
     let session_id_str = request.session_id.0.as_ref();
     let mode_id_str = request.mode_id.0.as_ref();
@@ -1256,7 +1256,7 @@ pub fn handle_fork_session(
     request: agent_client_protocol_schema::ForkSessionRequest,
     config: &AgentConfig,
     sessions: &Arc<SessionManager>,
-    connection_cx: JrConnectionCx<AgentToClient>,
+    connection_cx: ConnectionTo<Client>,
 ) -> Result<agent_client_protocol_schema::ForkSessionResponse, AgentError> {
     let source_session_id = request.session_id.0.to_string();
     let cwd = request.cwd;
@@ -1325,7 +1325,7 @@ pub fn handle_resume_session(
     request: agent_client_protocol_schema::ResumeSessionRequest,
     config: &AgentConfig,
     sessions: &Arc<SessionManager>,
-    connection_cx: JrConnectionCx<AgentToClient>,
+    connection_cx: ConnectionTo<Client>,
 ) -> Result<agent_client_protocol_schema::ResumeSessionResponse, AgentError> {
     let resume_session_id = request.session_id.0.to_string();
     let cwd = request.cwd;

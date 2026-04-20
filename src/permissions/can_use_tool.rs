@@ -13,7 +13,7 @@ use sacp::schema::{
     RequestPermissionOutcome, RequestPermissionRequest, SessionId, TextContent, ToolCallContent,
     ToolCallUpdate, ToolCallUpdateFields,
 };
-use sacp::{JrConnectionCx, link::AgentToClient};
+use sacp::{Client, ConnectionTo};
 use std::sync::{Arc, OnceLock};
 use tracing::{debug, info, warn};
 
@@ -111,7 +111,7 @@ async fn send_exit_plan_mode_request(
     session_id: &str,
     tool_use_id: &str,
     tool_input: &serde_json::Value,
-    connection_cx: &JrConnectionCx<AgentToClient>,
+    connection_cx: &ConnectionTo<Client>,
 ) -> Result<ExitPlanModeOutcome, AgentError> {
     // ExitPlanMode specific options matching TypeScript implementation
     let options = vec![

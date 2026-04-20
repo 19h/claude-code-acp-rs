@@ -19,8 +19,8 @@
 //!
 //! See: docs/MESSAGE_ORDERING_ISSUE.md
 
-use sacp::JrConnectionCx;
-use sacp::link::AgentToClient;
+use sacp::Client;
+use sacp::ConnectionTo;
 
 /// Ensure all pending notifications have been flushed to the client
 ///
@@ -34,7 +34,7 @@ use sacp::link::AgentToClient;
 /// * `connection_cx` - The ACP connection context (unused but kept for API consistency)
 /// * `notification_count` - Number of notifications sent (used for logging)
 pub async fn ensure_notifications_flushed(
-    _connection_cx: &JrConnectionCx<AgentToClient>,
+    _connection_cx: &ConnectionTo<Client>,
     notification_count: u64,
 ) {
     // Use minimal 5ms sleep to ensure message delivery

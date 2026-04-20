@@ -3,8 +3,8 @@
 //! Implements the ACP permission request/response protocol for asking users
 //! whether to allow tool execution.
 
-use sacp::JrConnectionCx;
-use sacp::link::AgentToClient;
+use sacp::Client;
+use sacp::ConnectionTo;
 use sacp::schema::{
     PermissionOption, PermissionOptionId, PermissionOptionKind, RequestPermissionOutcome,
     RequestPermissionRequest, SessionId, ToolCallUpdate, ToolCallUpdateFields,
@@ -65,7 +65,7 @@ impl PermissionRequestBuilder {
     /// Returns the user's decision as a `PermissionOutcome`.
     pub async fn request(
         self,
-        connection_cx: &JrConnectionCx<AgentToClient>,
+        connection_cx: &ConnectionTo<Client>,
     ) -> Result<PermissionOutcome, AgentError> {
         // Build the options
         let options = vec![

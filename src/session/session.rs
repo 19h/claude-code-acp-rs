@@ -19,8 +19,8 @@ use claude_code_agent_sdk::{
     ClaudeAgentOptions, ClaudeClient, HookEvent, HookMatcher, McpServerConfig, McpServers,
     SettingSource, SystemPrompt, SystemPromptPreset,
 };
-use sacp::JrConnectionCx;
-use sacp::link::AgentToClient;
+use sacp::Client;
+use sacp::ConnectionTo;
 use sacp::schema::{
     CurrentModeUpdate, McpServer, SessionId, SessionModeId, SessionNotification, SessionUpdate,
 };
@@ -96,7 +96,7 @@ pub struct Session {
     external_mcp_connected: AtomicBool,
     /// Connection context OnceLock for ACP requests (shared with hooks)
     /// Used by pre_tool_use_hook for permission requests
-    connection_cx_lock: Arc<OnceLock<JrConnectionCx<AgentToClient>>>,
+    connection_cx_lock: Arc<OnceLock<ConnectionTo<Client>>>,
     /// Cancel signal sender - used to notify when MCP cancellation is received
     cancel_sender: broadcast::Sender<()>,
     /// Cache for permission results by tool_input
@@ -211,8 +211,7 @@ impl Session {
         )));
 
         // Create shared connection_cx_lock for hook permission requests
-        let connection_cx_lock: Arc<OnceLock<JrConnectionCx<AgentToClient>>> =
-            Arc::new(OnceLock::new());
+        let connection_cx_lock: Arc<OnceLock<ConnectionTo<Client>>> = Arc::new(OnceLock::new());
 
         // Create shared permission_cache for hook-to-callback communication
         // PreToolUse hook caches permission results, can_use_tool callback checks it
@@ -530,7 +529,7 @@ impl Session {
     ///
     /// This is called once during handle_prompt to enable permission requests.
     /// The OnceLock ensures it's only set once even if called multiple times.
-    pub fn set_connection_cx(&self, cx: JrConnectionCx<AgentToClient>) {
+    pub fn set_connection_cx(&self, cx: ConnectionTo<Client>) {
         if self.connection_cx_lock.get().is_none() {
             drop(self.connection_cx_lock.set(cx));
         }
@@ -539,7 +538,7 @@ impl Session {
     /// Get the connection context if available
     ///
     /// Returns None if called before handle_prompt sets the connection.
-    pub fn get_connection_cx(&self) -> Option<&JrConnectionCx<AgentToClient>> {
+    pub fn get_connection_cx(&self) -> Option<&ConnectionTo<Client>> {
         self.connection_cx_lock.get()
     }
 
@@ -1187,7 +1186,7 @@ impl Session {
     /// integration for Bash commands.
     pub async fn configure_acp_server(
         &self,
-        connection_cx: JrConnectionCx<AgentToClient>,
+        connection_cx: ConnectionTo<Client>,
         terminal_client: Option<Arc<TerminalClient>>,
     ) {
         self.acp_mcp_server.set_session_id(&self.session_id);

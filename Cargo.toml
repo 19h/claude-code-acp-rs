@@ -26,16 +26,16 @@ path = "src/main.rs"
 # ACP Protocol SDK (sacp re-exports agent-client-protocol-schema types via sacp::schema)
 # Using official symposium-acp from crates.io
 # NOTE: During development, patch is applied below to use fork with flush mechanism
-sacp = "10.1.0"
+sacp = "11.0.0"
 
 # Re-export agent-client-protocol-schema types for unstable features
 # Note: sacp 10.1.0 pulls in agent-client-protocol-schema without unstable features,
 # but our [patch.crates-io] overrides it with the local vendor version that has all features enabled.
-agent-client-protocol-schema = { version = "0.10.8", features = [
+agent-client-protocol-schema = { version = "0.11.0", features = [
     "unstable_session_model",
     "unstable_session_fork",
     "unstable_session_resume",
-    "unstable_session_list",
+    "unstable_session_close",
     "unstable_session_usage",
 ] }
 

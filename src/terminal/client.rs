@@ -6,12 +6,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
-use sacp::JrConnectionCx;
-use sacp::link::AgentToClient;
+use sacp::Client;
+use sacp::ConnectionTo;
 use sacp::schema::{
-    CreateTerminalRequest, CreateTerminalResponse, EnvVariable, KillTerminalCommandRequest,
-    KillTerminalCommandResponse, ReleaseTerminalRequest, ReleaseTerminalResponse, SessionId,
-    TerminalId, TerminalOutputRequest, TerminalOutputResponse, WaitForTerminalExitRequest,
+    CreateTerminalRequest, CreateTerminalResponse, EnvVariable, KillTerminalRequest,
+    KillTerminalResponse, ReleaseTerminalRequest, ReleaseTerminalResponse, SessionId, TerminalId,
+    TerminalOutputRequest, TerminalOutputResponse, WaitForTerminalExitRequest,
     WaitForTerminalExitResponse,
 };
 use tracing::instrument;
@@ -26,17 +26,14 @@ use crate::types::AgentError;
 #[derive(Debug, Clone)]
 pub struct TerminalClient {
     /// Connection context for sending requests
-    connection_cx: JrConnectionCx<AgentToClient>,
+    connection_cx: ConnectionTo<Client>,
     /// Session ID for this client
     session_id: SessionId,
 }
 
 impl TerminalClient {
     /// Create a new Terminal API client
-    pub fn new(
-        connection_cx: JrConnectionCx<AgentToClient>,
-        session_id: impl Into<SessionId>,
-    ) -> Self {
+    pub fn new(connection_cx: ConnectionTo<Client>, session_id: impl Into<SessionId>) -> Self {
         Self {
             connection_cx,
             session_id: session_id.into(),
@@ -237,7 +234,7 @@ impl TerminalClient {
     pub async fn kill(
         &self,
         terminal_id: impl Into<TerminalId>,
-    ) -> Result<KillTerminalCommandResponse, AgentError> {
+    ) -> Result<KillTerminalResponse, AgentError> {
         let start_time = Instant::now();
         let tid: TerminalId = terminal_id.into();
 
@@ -246,7 +243,7 @@ impl TerminalClient {
             "Killing terminal command"
         );
 
-        let request = KillTerminalCommandRequest::new(self.session_id.clone(), tid.clone());
+        let request = KillTerminalRequest::new(self.session_id.clone(), tid.clone());
 
         let response = self
             .connection_cx

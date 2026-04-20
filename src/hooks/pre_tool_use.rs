@@ -13,8 +13,7 @@ use claude_code_agent_sdk::{
 use dashmap::DashMap;
 use futures::future::BoxFuture;
 use sacp::{
-    JrConnectionCx,
-    link::AgentToClient,
+    Client, ConnectionTo,
     schema::{
         SessionId, SessionNotification, SessionUpdate, ToolCallContent, ToolCallId, ToolCallStatus,
         ToolCallUpdate, ToolCallUpdateFields,
@@ -71,7 +70,7 @@ use crate::utils::is_plans_directory_path;
 ///
 /// A hook callback that can be used with ClaudeAgentOptions
 pub fn create_pre_tool_use_hook(
-    connection_cx_lock: Arc<OnceLock<JrConnectionCx<AgentToClient>>>,
+    connection_cx_lock: Arc<OnceLock<ConnectionTo<Client>>>,
     session_id: String,
     permission_checker: Option<Arc<RwLock<PermissionChecker>>>,
     permission: Arc<RwLock<PermissionHandler>>,
@@ -496,7 +495,7 @@ pub fn create_pre_tool_use_hook(
 /// 2. The notification can be properly flushed with the flush mechanism
 /// 3. Any send errors are detected immediately
 fn send_denied_tool_result(
-    connection_cx_lock: &Arc<OnceLock<JrConnectionCx<AgentToClient>>>,
+    connection_cx_lock: &Arc<OnceLock<ConnectionTo<Client>>>,
     session_id: &str,
     tool_use_id: &str,
     tool_name: &str,
@@ -570,7 +569,7 @@ fn send_denied_tool_result(
 ///
 /// A HookJsonOutput with deny decision
 fn create_deny_response(
-    connection_cx_lock: &Arc<OnceLock<JrConnectionCx<AgentToClient>>>,
+    connection_cx_lock: &Arc<OnceLock<ConnectionTo<Client>>>,
     session_id: &str,
     tool_use_id: Option<&String>,
     tool_name: &str,
@@ -618,8 +617,7 @@ mod tests {
         checker: Arc<RwLock<PermissionChecker>>,
         mode: PermissionMode,
     ) -> HookCallback {
-        let connection_cx_lock: Arc<OnceLock<JrConnectionCx<AgentToClient>>> =
-            Arc::new(OnceLock::new());
+        let connection_cx_lock: Arc<OnceLock<ConnectionTo<Client>>> = Arc::new(OnceLock::new());
         let permission_cache: Arc<DashMap<String, bool>> = Arc::new(DashMap::new());
         let tool_use_id_cache: Arc<DashMap<String, String>> = Arc::new(DashMap::new());
         // Create PermissionHandler with the specified mode
@@ -1082,8 +1080,7 @@ mod tests {
     #[tokio::test]
     async fn test_create_deny_response_without_tool_use_id() {
         // Test that create_deny_response handles missing tool_use_id gracefully
-        let connection_cx_lock: Arc<OnceLock<JrConnectionCx<AgentToClient>>> =
-            Arc::new(OnceLock::new());
+        let connection_cx_lock: Arc<OnceLock<ConnectionTo<Client>>> = Arc::new(OnceLock::new());
         let permission_cache: Arc<DashMap<String, bool>> = Arc::new(DashMap::new());
         let tool_use_id_cache: Arc<DashMap<String, String>> = Arc::new(DashMap::new());
         // Create PermissionHandler with Default mode
@@ -1122,8 +1119,7 @@ mod tests {
     #[tokio::test]
     async fn test_empty_tool_name_handling() {
         // Test that empty tool_name is handled gracefully
-        let _connection_cx_lock: Arc<OnceLock<JrConnectionCx<AgentToClient>>> =
-            Arc::new(OnceLock::new());
+        let _connection_cx_lock: Arc<OnceLock<ConnectionTo<Client>>> = Arc::new(OnceLock::new());
         let _permission_cache: Arc<DashMap<String, bool>> = Arc::new(DashMap::new());
         let _tool_use_id_cache: Arc<DashMap<String, String>> = Arc::new(DashMap::new());
 

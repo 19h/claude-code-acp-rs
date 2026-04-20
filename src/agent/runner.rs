@@ -5,12 +5,12 @@
 use std::io::IsTerminal;
 use std::sync::Arc;
 
-use sacp::link::AgentToClient;
+use sacp::role::acp::Agent;
 use sacp::schema::{
     CancelNotification, InitializeRequest, LoadSessionRequest, NewSessionRequest, PromptRequest,
     SetSessionModeRequest,
 };
-use sacp::{ByteStreams, JrConnectionCx, MessageCx};
+use sacp::{ByteStreams, Client, ConnectionTo, Dispatch};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
@@ -419,7 +419,7 @@ async fn run_acp_server() -> Result<(), sacp::Error> {
 
     // Build the handler chain
     tracing::debug!("Building ACP handler chain");
-    AgentToClient::builder()
+    Agent::builder(Agent)
         .name(agent.name())
         // Handle initialize request
         .on_receive_request(
@@ -712,11 +712,11 @@ async fn run_acp_server() -> Result<(), sacp::Error> {
             sacp::on_receive_notification!(),
         )
         // Handle unknown messages and unstable protocol methods
-        .on_receive_message(
+        .on_receive_dispatch(
             {
                 let config = agent.config().clone();
                 let sessions = agent.sessions().clone();
-                async move |message: MessageCx, connection_cx: JrConnectionCx<AgentToClient>| {
+                async move |message: Dispatch, connection_cx: ConnectionTo<Client>| {
                     let method = message.method().to_string();
                     let span = tracing::info_span!(
                         "handle_message",
@@ -756,7 +756,7 @@ async fn run_acp_server() -> Result<(), sacp::Error> {
                                 }).await
                             }
                             "session/list" => {
-                                dispatch_unstable_request(message, |params| async move {
+                                dispatch_unstable_request(message, |params| async {
                                     let request: agent_client_protocol_schema::ListSessionsRequest =
                                         serde_json::from_value(params)?;
                                     let response = handlers::handle_list_sessions(request)
@@ -777,11 +777,11 @@ async fn run_acp_server() -> Result<(), sacp::Error> {
                     .await
                 }
             },
-            sacp::on_receive_message!(),
+            sacp::on_receive_dispatch!(),
         )
         // Serve over stdio
         // Note: stdout is used for ACP protocol messages, stderr is for logging
-        .serve(ByteStreams::new(
+        .connect_to(ByteStreams::new(
             tokio::io::stdout().compat_write(),
             tokio::io::stdin().compat(),
         ))
@@ -807,26 +807,30 @@ async fn run_acp_server() -> Result<(), sacp::Error> {
 
 /// Dispatch an unstable protocol request.
 ///
-/// Extracts the params from the untyped MessageCx, passes them to the handler,
+/// Extracts the params from the untyped Dispatch, passes them to the handler,
 /// and sends the response back. The handler is responsible for deserializing the
 /// params into the expected type and returning a serialized response.
 async fn dispatch_unstable_request<Fut>(
-    message: MessageCx,
+    message: Dispatch,
     handler: impl FnOnce(serde_json::Value) -> Fut,
 ) -> Result<(), sacp::Error>
 where
     Fut: std::future::Future<Output = Result<serde_json::Value, anyhow::Error>>,
 {
     match message {
-        MessageCx::Request(untyped, request_cx) => match handler(untyped.params.clone()).await {
-            Ok(response_value) => request_cx.respond(response_value),
+        Dispatch::Request(untyped, responder) => match handler(untyped.params.clone()).await {
+            Ok(response_value) => responder.respond(response_value),
             Err(e) => {
                 tracing::error!(error = %e, "Unstable handler error");
-                request_cx.respond_with_error(sacp::util::internal_error(e.to_string()))
+                responder.respond_with_error(sacp::util::internal_error(e.to_string()))
             }
         },
-        MessageCx::Notification(_) => {
+        Dispatch::Notification(_) => {
             tracing::warn!("Received notification for request-only method");
+            Ok(())
+        }
+        Dispatch::Response(_, _) => {
+            tracing::warn!("Received response for request-only method");
             Ok(())
         }
     }

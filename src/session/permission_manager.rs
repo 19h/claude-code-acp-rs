@@ -8,8 +8,8 @@
 
 use std::sync::Arc;
 
-use sacp::JrConnectionCx;
-use sacp::link::AgentToClient;
+use sacp::Client;
+use sacp::ConnectionTo;
 use sacp::schema::{
     PermissionOption, PermissionOptionId, PermissionOptionKind, RequestPermissionOutcome,
     RequestPermissionRequest, SessionId, ToolCallUpdate, ToolCallUpdateFields,
@@ -82,7 +82,7 @@ impl std::fmt::Debug for PermissionManager {
 
 impl PermissionManager {
     /// Create a new PermissionManager
-    pub fn new(connection_cx: Arc<JrConnectionCx<AgentToClient>>) -> Self {
+    pub fn new(connection_cx: Arc<ConnectionTo<Client>>) -> Self {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
 
         // Spawn background task to handle permission requests
@@ -132,7 +132,7 @@ impl PermissionManager {
     /// Background task: handle permission requests
     async fn handle_permission_requests(
         mut receiver: tokio::sync::mpsc::UnboundedReceiver<PendingPermissionRequest>,
-        connection_cx: Arc<JrConnectionCx<AgentToClient>>,
+        connection_cx: Arc<ConnectionTo<Client>>,
     ) {
         while let Some(request) = receiver.recv().await {
             tracing::info!(
@@ -177,7 +177,7 @@ impl PermissionManager {
 
     /// Send permission request to client via SACP
     async fn send_permission_request_to_client(
-        connection_cx: &JrConnectionCx<AgentToClient>,
+        connection_cx: &ConnectionTo<Client>,
         tool_name: &str,
         tool_input: &serde_json::Value,
         tool_call_id: &str,

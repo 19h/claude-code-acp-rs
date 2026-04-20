@@ -14,8 +14,8 @@ use claude_code_agent_sdk::{
 };
 use futures::FutureExt;
 use futures::future::BoxFuture;
-use sacp::JrConnectionCx;
-use sacp::link::AgentToClient;
+use sacp::Client;
+use sacp::ConnectionTo;
 use sacp::schema::{
     Meta, SessionId, SessionNotification, SessionUpdate, Terminal, ToolCall, ToolCallContent,
     ToolCallId, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
@@ -62,7 +62,7 @@ pub struct AcpMcpServer {
     /// Session ID (set once at initialization)
     session_id: OnceLock<String>,
     /// ACP connection for sending notifications (set once at initialization)
-    connection_cx: OnceLock<JrConnectionCx<AgentToClient>>,
+    connection_cx: OnceLock<ConnectionTo<Client>>,
     /// Terminal client (set once at initialization)
     ///
     /// Note: While configure_acp_server is called on every prompt and
@@ -134,7 +134,7 @@ impl AcpMcpServer {
     }
 
     /// Set the ACP connection (only sets if not already set)
-    pub fn set_connection(&self, cx: JrConnectionCx<AgentToClient>) {
+    pub fn set_connection(&self, cx: ConnectionTo<Client>) {
         if self.connection_cx.get().is_some() {
             tracing::warn!("connection_cx already set, ignoring new value");
         } else {
@@ -249,7 +249,7 @@ impl AcpMcpServer {
     /// Note: This function is kept for potential future use with Terminal API.
     #[allow(dead_code)]
     fn send_terminal_update_with_cx(
-        cx: &JrConnectionCx<AgentToClient>,
+        cx: &ConnectionTo<Client>,
         session_id: &str,
         tool_use_id: &str,
         terminal_id: &str,
@@ -351,7 +351,7 @@ impl AcpMcpServer {
     /// For successful completion, `content` should be `None` to avoid duplicate output
     /// (the tool result is sent separately via the result message).
     fn send_tool_call_update_with_meta(
-        cx: &JrConnectionCx<AgentToClient>,
+        cx: &ConnectionTo<Client>,
         session_id: &str,
         tool_use_id: &str,
         status: Option<ToolCallStatus>,
@@ -409,7 +409,7 @@ impl AcpMcpServer {
     ///
     /// Both are needed for terminal output to be displayed correctly.
     fn send_tool_call_with_meta(
-        cx: &JrConnectionCx<AgentToClient>,
+        cx: &ConnectionTo<Client>,
         session_id: &str,
         tool_use_id: &str,
         title: Option<&str>,
@@ -844,7 +844,7 @@ impl AcpMcpServer {
         context: &ToolContext,
         timeout_ms: u64,
         run_in_background: bool,
-        cx: Option<&JrConnectionCx<AgentToClient>>,
+        cx: Option<&ConnectionTo<Client>>,
         session_id: Option<&str>,
         tool_use_id: Option<&str>,
     ) -> Result<ToolResult, String> {

@@ -3,8 +3,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use sacp::JrConnectionCx;
-use sacp::link::AgentToClient;
+use sacp::Client;
+use sacp::ConnectionTo;
 use sacp::schema::{
     SessionId, SessionNotification, SessionUpdate, Terminal, ToolCallContent, ToolCallId,
     ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields,
@@ -88,7 +88,7 @@ pub struct ToolContext {
     /// Current tool use ID (for sending mid-execution updates)
     tool_use_id: Option<String>,
     /// Connection context for sending notifications
-    connection_cx: Option<JrConnectionCx<AgentToClient>>,
+    connection_cx: Option<ConnectionTo<Client>>,
     /// Permission checker for tool-level permission checks
     pub permission_checker: Option<Arc<tokio::sync::RwLock<PermissionChecker>>>,
 }
@@ -133,7 +133,7 @@ impl ToolContext {
     }
 
     /// Set the connection context for sending notifications
-    pub fn with_connection_cx(mut self, cx: JrConnectionCx<AgentToClient>) -> Self {
+    pub fn with_connection_cx(mut self, cx: ConnectionTo<Client>) -> Self {
         self.connection_cx = Some(cx);
         self
     }
