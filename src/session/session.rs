@@ -14,7 +14,9 @@ use std::time::Instant;
 use tokio::sync::broadcast;
 
 use claude_code_agent_sdk::types::config::PermissionMode as SdkPermissionMode;
-use claude_code_agent_sdk::types::mcp::McpSdkServerConfig;
+use claude_code_agent_sdk::types::mcp::{
+    McpHttpServerConfig, McpSdkServerConfig, McpSseServerConfig, McpStdioServerConfig,
+};
 use claude_code_agent_sdk::{
     ClaudeAgentOptions, ClaudeClient, HookEvent, HookMatcher, McpServerConfig, McpServers,
     SettingSource, SystemPrompt, SystemPromptPreset,
@@ -60,6 +62,59 @@ fn get_acp_replacement_tools() -> Vec<&'static str> {
     ]
 }
 
+fn headers_to_map(headers: &[sacp::schema::HttpHeader]) -> Option<HashMap<String, String>> {
+    if headers.is_empty() {
+        None
+    } else {
+        Some(
+            headers
+                .iter()
+                .map(|header| (header.name.clone(), header.value.clone()))
+                .collect(),
+        )
+    }
+}
+
+fn env_to_map(env: &[sacp::schema::EnvVariable]) -> Option<HashMap<String, String>> {
+    if env.is_empty() {
+        None
+    } else {
+        Some(
+            env.iter()
+                .map(|entry| (entry.name.clone(), entry.value.clone()))
+                .collect(),
+        )
+    }
+}
+
+fn build_passthrough_mcp_server(server: &McpServer) -> Option<(String, McpServerConfig)> {
+    match server {
+        McpServer::Http(http) => Some((
+            http.name.clone(),
+            McpServerConfig::Http(McpHttpServerConfig {
+                url: http.url.clone(),
+                headers: headers_to_map(&http.headers),
+            }),
+        )),
+        McpServer::Sse(sse) => Some((
+            sse.name.clone(),
+            McpServerConfig::Sse(McpSseServerConfig {
+                url: sse.url.clone(),
+                headers: headers_to_map(&sse.headers),
+            }),
+        )),
+        McpServer::Stdio(stdio) => Some((
+            stdio.name.clone(),
+            McpServerConfig::Stdio(McpStdioServerConfig {
+                command: stdio.command.to_string_lossy().into_owned(),
+                args: (!stdio.args.is_empty()).then_some(stdio.args.clone()),
+                env: env_to_map(&stdio.env),
+            }),
+        )),
+        _ => None,
+    }
+}
+
 /// An active Claude session
 ///
 /// Each session holds its own ClaudeClient instance and maintains
@@ -89,11 +144,6 @@ pub struct Session {
     acp_mcp_server: Arc<AcpMcpServer>,
     /// Background process manager
     background_processes: Arc<BackgroundProcessManager>,
-    /// External MCP servers to connect (from client request)
-    /// Set once during session initialization via set_external_mcp_servers()
-    external_mcp_servers: OnceLock<Vec<McpServer>>,
-    /// Whether external MCP servers have been connected
-    external_mcp_connected: AtomicBool,
     /// Connection context OnceLock for ACP requests (shared with hooks)
     /// Used by pre_tool_use_hook for permission requests
     connection_cx_lock: Arc<OnceLock<JrConnectionCx<AgentToClient>>>,
@@ -152,6 +202,7 @@ impl Session {
     /// * `cwd` - Working directory
     /// * `config` - Agent configuration from environment
     /// * `meta` - Session metadata from the new session request
+    /// * `mcp_servers` - MCP servers requested by the ACP client for passthrough
     #[instrument(
         name = "session_create",
         skip(config, meta),
@@ -166,6 +217,7 @@ impl Session {
         cwd: PathBuf,
         config: &AgentConfig,
         meta: Option<&NewSessionMeta>,
+        mcp_servers: &[McpServer],
     ) -> Result<Arc<Self>> {
         let start_time = Instant::now();
 
@@ -278,9 +330,31 @@ impl Session {
             }),
         );
 
+        for server in mcp_servers {
+            let Some((name, config)) = build_passthrough_mcp_server(server) else {
+                tracing::warn!(
+                    session_id = %session_id,
+                    server = ?server,
+                    "Skipping unsupported MCP passthrough server"
+                );
+                continue;
+            };
+
+            if name == "acp" {
+                tracing::warn!(
+                    session_id = %session_id,
+                    "Skipping passthrough MCP server named 'acp' because it conflicts with the internal ACP server"
+                );
+                continue;
+            }
+
+            mcp_servers_dict.insert(name, config);
+        }
+
         tracing::info!(
             session_id = %session_id,
             mcp_server_count = mcp_servers_dict.len(),
+            passthrough_count = mcp_servers.len(),
             "MCP servers configured"
         );
 
@@ -309,6 +383,13 @@ impl Session {
             // who don't have Claude Code CLI pre-installed
             .auto_download_cli(true)
             .build();
+
+        // Keep Claude focused on the overlay-provided MCP topology.
+        // Without strict mode, user/project MCP settings can leak unrelated servers
+        // into the session and drown out the IDA tool surface.
+        options
+            .extra_args
+            .insert("strict-mcp-config".to_string(), None);
 
         // Debug: Verify can_use_tool is set
         tracing::info!(
@@ -452,8 +533,6 @@ impl Session {
             current_model: tokio::sync::RwLock::new(None),
             acp_mcp_server,
             background_processes,
-            external_mcp_servers: OnceLock::new(),
-            external_mcp_connected: AtomicBool::new(false),
             connection_cx_lock,
             cancel_sender: broadcast::channel(1).0,
             permission_cache,
@@ -468,62 +547,6 @@ impl Session {
         drop(session_lock.set(session_arc.clone()));
 
         Ok(session_arc)
-    }
-
-    /// Set external MCP servers to connect
-    ///
-    /// # Arguments
-    ///
-    /// * `servers` - List of MCP servers from the client request
-    pub fn set_external_mcp_servers(&self, servers: Vec<McpServer>) {
-        if !servers.is_empty() {
-            tracing::info!(
-                session_id = %self.session_id,
-                server_count = servers.len(),
-                "Storing external MCP servers for later connection"
-            );
-
-            for server in &servers {
-                match server {
-                    McpServer::Stdio(s) => {
-                        tracing::debug!(
-                            session_id = %self.session_id,
-                            server_name = %s.name,
-                            command = ?s.command,
-                            args = ?s.args,
-                            "External MCP server (stdio)"
-                        );
-                    }
-                    McpServer::Http(s) => {
-                        tracing::debug!(
-                            session_id = %self.session_id,
-                            server_name = %s.name,
-                            url = %s.url,
-                            "External MCP server (http)"
-                        );
-                    }
-                    McpServer::Sse(s) => {
-                        tracing::debug!(
-                            session_id = %self.session_id,
-                            server_name = %s.name,
-                            url = %s.url,
-                            "External MCP server (sse)"
-                        );
-                    }
-                    _ => {
-                        tracing::debug!(
-                            session_id = %self.session_id,
-                            "External MCP server (unknown type)"
-                        );
-                    }
-                }
-            }
-        }
-
-        // Only set if not already set (configure_acp_server may be called multiple times)
-        if self.external_mcp_servers.get().is_none() {
-            drop(self.external_mcp_servers.set(servers));
-        }
     }
 
     /// Set the connection context for ACP requests
@@ -599,149 +622,6 @@ impl Session {
     /// Get a reference to the tool_use_id_cache for sharing with hooks
     pub fn tool_use_id_cache(&self) -> Arc<DashMap<String, String>> {
         Arc::clone(&self.tool_use_id_cache)
-    }
-
-    /// Connect to external MCP servers
-    ///
-    /// This should be called before the first prompt to ensure all
-    /// external MCP tools are available.
-    #[instrument(
-        name = "connect_external_mcp_servers",
-        skip(self),
-        fields(session_id = %self.session_id)
-    )]
-    pub async fn connect_external_mcp_servers(&self) -> Result<()> {
-        // Only connect once
-        if self.external_mcp_connected.load(Ordering::SeqCst) {
-            tracing::debug!(
-                session_id = %self.session_id,
-                "External MCP servers already connected"
-            );
-            return Ok(());
-        }
-
-        // Get servers (no lock needed with OnceLock)
-        let Some(servers) = self.external_mcp_servers.get() else {
-            tracing::debug!(
-                session_id = %self.session_id,
-                "No external MCP servers to connect"
-            );
-            self.external_mcp_connected.store(true, Ordering::SeqCst);
-            return Ok(());
-        };
-
-        // Clone server list to avoid holding reference
-        let servers_vec: Vec<_> = servers.clone();
-
-        let server_count = servers_vec.len();
-        let start_time = Instant::now();
-
-        tracing::info!(
-            session_id = %self.session_id,
-            server_count = server_count,
-            "Connecting to external MCP servers"
-        );
-
-        let external_manager = self.acp_mcp_server.mcp_server().external_manager();
-
-        let mut success_count = 0;
-        let mut error_count = 0;
-
-        for server in &servers_vec {
-            match server {
-                McpServer::Stdio(s) => {
-                    let server_start = Instant::now();
-
-                    tracing::info!(
-                        session_id = %self.session_id,
-                        server_name = %s.name,
-                        command = ?s.command,
-                        args = ?s.args,
-                        "Connecting to external MCP server (stdio)"
-                    );
-
-                    // Convert env variables
-                    let env: Option<HashMap<String, String>> = if s.env.is_empty() {
-                        None
-                    } else {
-                        Some(
-                            s.env
-                                .iter()
-                                .map(|e| (e.name.clone(), e.value.clone()))
-                                .collect(),
-                        )
-                    };
-
-                    match external_manager
-                        .connect(
-                            s.name.clone(),
-                            s.command.to_string_lossy().as_ref(),
-                            &s.args,
-                            env.as_ref(),
-                            Some(self.cwd.as_path()),
-                        )
-                        .await
-                    {
-                        Ok(()) => {
-                            success_count += 1;
-                            let elapsed = server_start.elapsed();
-                            tracing::info!(
-                                session_id = %self.session_id,
-                                server_name = %s.name,
-                                elapsed_ms = elapsed.as_millis(),
-                                "Successfully connected to external MCP server"
-                            );
-                        }
-                        Err(e) => {
-                            error_count += 1;
-                            let elapsed = server_start.elapsed();
-                            tracing::error!(
-                                session_id = %self.session_id,
-                                server_name = %s.name,
-                                error = %e,
-                                elapsed_ms = elapsed.as_millis(),
-                                "Failed to connect to external MCP server"
-                            );
-                        }
-                    }
-                }
-                McpServer::Http(s) => {
-                    tracing::warn!(
-                        session_id = %self.session_id,
-                        server_name = %s.name,
-                        url = %s.url,
-                        "HTTP MCP servers not yet supported"
-                    );
-                }
-                McpServer::Sse(s) => {
-                    tracing::warn!(
-                        session_id = %self.session_id,
-                        server_name = %s.name,
-                        url = %s.url,
-                        "SSE MCP servers not yet supported"
-                    );
-                }
-                _ => {
-                    tracing::warn!(
-                        session_id = %self.session_id,
-                        "Unknown MCP server type - not supported"
-                    );
-                }
-            }
-        }
-
-        let total_elapsed = start_time.elapsed();
-        tracing::info!(
-            session_id = %self.session_id,
-            total_servers = server_count,
-            success_count = success_count,
-            error_count = error_count,
-            total_elapsed_ms = total_elapsed.as_millis(),
-            "Finished connecting external MCP servers"
-        );
-
-        self.external_mcp_connected.store(true, Ordering::SeqCst);
-        Ok(())
     }
 
     /// Connect to Claude CLI
@@ -1252,6 +1132,7 @@ mod tests {
             PathBuf::from("/tmp"),
             &test_config(),
             None,
+            &[],
         )
         .unwrap();
 
@@ -1269,6 +1150,7 @@ mod tests {
             PathBuf::from("/tmp"),
             &test_config(),
             None,
+            &[],
         )
         .unwrap();
 
@@ -1307,6 +1189,7 @@ mod tests {
             PathBuf::from("/tmp"),
             &test_config(),
             None,
+            &[],
         )
         .unwrap();
 
@@ -1322,6 +1205,7 @@ mod tests {
             PathBuf::from("/tmp"),
             &test_config(),
             None,
+            &[],
         )
         .unwrap();
 
@@ -1409,6 +1293,58 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_build_passthrough_mcp_server_sse() {
+        let server = McpServer::Sse(
+            sacp::schema::McpServerSse::new("ida", "http://127.0.0.1:8080/sse").headers(vec![
+                sacp::schema::HttpHeader::new("Authorization", "Bearer token"),
+            ]),
+        );
+
+        let (name, config) = build_passthrough_mcp_server(&server).unwrap();
+        assert_eq!(name, "ida");
+
+        match config {
+            McpServerConfig::Sse(sse) => {
+                assert_eq!(sse.url, "http://127.0.0.1:8080/sse");
+                assert_eq!(
+                    sse.headers
+                        .as_ref()
+                        .and_then(|headers| headers.get("Authorization")),
+                    Some(&"Bearer token".to_string())
+                );
+            }
+            _ => panic!("expected SSE MCP config"),
+        }
+    }
+
+    #[test]
+    fn test_build_passthrough_mcp_server_stdio() {
+        let server = McpServer::Stdio(
+            sacp::schema::McpServerStdio::new("ctx7", "/usr/bin/env")
+                .args(vec!["node".to_string(), "server.js".to_string()])
+                .env(vec![sacp::schema::EnvVariable::new("TOKEN", "secret")]),
+        );
+
+        let (name, config) = build_passthrough_mcp_server(&server).unwrap();
+        assert_eq!(name, "ctx7");
+
+        match config {
+            McpServerConfig::Stdio(stdio) => {
+                assert_eq!(stdio.command, "/usr/bin/env");
+                assert_eq!(
+                    stdio.args,
+                    Some(vec!["node".to_string(), "server.js".to_string()])
+                );
+                assert_eq!(
+                    stdio.env.as_ref().and_then(|env| env.get("TOKEN")),
+                    Some(&"secret".to_string())
+                );
+            }
+            _ => panic!("expected stdio MCP config"),
+        }
+    }
+
     /// Test Session::cleanup() with no processes
     ///
     /// Verifies that cleanup succeeds when there are no MCP servers
@@ -1420,6 +1356,7 @@ mod tests {
             PathBuf::from("/tmp"),
             &test_config(),
             None,
+            &[],
         )
         .unwrap();
 
@@ -1439,6 +1376,7 @@ mod tests {
             PathBuf::from("/tmp"),
             &test_config(),
             None,
+            &[],
         )
         .unwrap();
 
@@ -1554,6 +1492,7 @@ mod tests {
             PathBuf::from("/tmp"),
             &test_config(),
             None,
+            &[],
         )
         .unwrap();
 

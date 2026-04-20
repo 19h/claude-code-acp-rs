@@ -150,13 +150,13 @@ pub async fn handle_new_session(
     );
 
     // Create the session
-    let session =
-        sessions.create_session(session_id.clone(), cwd.clone(), config, meta.as_ref())?;
-
-    // Store external MCP servers for later connection
-    if !request.mcp_servers.is_empty() {
-        session.set_external_mcp_servers(request.mcp_servers);
-    }
+    sessions.create_session(
+        session_id.clone(),
+        cwd.clone(),
+        config,
+        meta.as_ref(),
+        &request.mcp_servers,
+    )?;
 
     // Build available modes
     let available_modes = build_available_modes();
@@ -252,7 +252,7 @@ pub fn handle_load_session(
             session_id = %session_id,
             "Creating session with resume option"
         );
-        sessions.create_session(session_id.clone(), cwd.clone(), config, Some(&meta))?;
+        sessions.create_session(session_id.clone(), cwd.clone(), config, Some(&meta), &[])?;
 
         let elapsed = start_time.elapsed();
         tracing::info!(
@@ -437,42 +437,6 @@ pub async fn handle_prompt(
     // Set connection context for permission requests
     // This enables the can_use_tool callback to send permission requests to the client
     session.set_connection_cx(connection_cx.clone());
-
-    // Connect external MCP servers first (if any)
-    // This ensures external tools are available when Claude CLI starts
-    let external_mcp_timeout = tokio::time::Duration::from_secs(5);
-    let external_mcp_start = Instant::now();
-
-    match tokio::time::timeout(external_mcp_timeout, session.connect_external_mcp_servers()).await {
-        Ok(Ok(())) => {
-            let elapsed = external_mcp_start.elapsed();
-            if elapsed.as_millis() > 100 {
-                tracing::info!(
-                    session_id = %session_id,
-                    external_mcp_elapsed_ms = elapsed.as_millis(),
-                    "External MCP servers connected successfully"
-                );
-            }
-        }
-        Ok(Err(e)) => {
-            let elapsed = external_mcp_start.elapsed();
-            tracing::error!(
-                session_id = %session_id,
-                error = %e,
-                elapsed_ms = elapsed.as_millis(),
-                "Error connecting to external MCP servers"
-            );
-            // Continue anyway - external MCP failures shouldn't block the session
-        }
-        Err(_) => {
-            tracing::error!(
-                session_id = %session_id,
-                timeout_secs = external_mcp_timeout.as_secs(),
-                "External MCP connection timed out, continuing without external tools"
-            );
-            // Continue anyway - timeout shouldn't block the session
-        }
-    }
 
     // Connect if not already connected
     if !session.is_connected() {
@@ -1274,13 +1238,13 @@ pub fn handle_fork_session(
     let new_session_id = uuid::Uuid::new_v4().to_string();
 
     // Create the forked session
-    let session =
-        sessions.create_session(new_session_id.clone(), cwd.clone(), config, Some(&meta))?;
-
-    // Store external MCP servers if provided
-    if !request.mcp_servers.is_empty() {
-        session.set_external_mcp_servers(request.mcp_servers);
-    }
+    sessions.create_session(
+        new_session_id.clone(),
+        cwd.clone(),
+        config,
+        Some(&meta),
+        &request.mcp_servers,
+    )?;
 
     // Build response with available modes and models (same as new session)
     let available_modes = build_available_modes();
@@ -1343,13 +1307,13 @@ pub fn handle_resume_session(
     let new_session_id = uuid::Uuid::new_v4().to_string();
 
     // Create the resumed session
-    let session =
-        sessions.create_session(new_session_id.clone(), cwd.clone(), config, Some(&meta))?;
-
-    // Store external MCP servers if provided
-    if !request.mcp_servers.is_empty() {
-        session.set_external_mcp_servers(request.mcp_servers);
-    }
+    sessions.create_session(
+        new_session_id.clone(),
+        cwd.clone(),
+        config,
+        Some(&meta),
+        &request.mcp_servers,
+    )?;
 
     // Build response with available modes and models
     let available_modes = build_available_modes();

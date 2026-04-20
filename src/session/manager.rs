@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use dashmap::DashMap;
+use sacp::schema::McpServer;
 use tracing::instrument;
 
 use crate::types::{AgentConfig, AgentError, NewSessionMeta, Result};
@@ -38,6 +39,7 @@ impl SessionManager {
     /// * `cwd` - Working directory for the session
     /// * `config` - Agent configuration
     /// * `meta` - Optional session metadata
+    /// * `mcp_servers` - MCP servers to pass through to the native Claude CLI
     ///
     /// # Returns
     ///
@@ -48,6 +50,7 @@ impl SessionManager {
         cwd: PathBuf,
         config: &AgentConfig,
         meta: Option<&NewSessionMeta>,
+        mcp_servers: &[McpServer],
     ) -> Result<Arc<Session>> {
         // Use entry API to atomically check and insert
         let entry = self.sessions.entry(session_id.clone());
@@ -59,7 +62,7 @@ impl SessionManager {
             }
             dashmap::Entry::Vacant(vacant) => {
                 // Session::new() now directly returns Arc<Session>
-                let arc_session = Session::new(session_id, cwd, config, meta)?;
+                let arc_session = Session::new(session_id, cwd, config, meta, mcp_servers)?;
                 vacant.insert(Arc::clone(&arc_session));
                 Ok(arc_session)
             }
@@ -167,6 +170,7 @@ mod tests {
                 PathBuf::from("/tmp"),
                 &config,
                 None,
+                &[],
             )
             .unwrap();
 
@@ -186,6 +190,7 @@ mod tests {
                 PathBuf::from("/tmp"),
                 &config,
                 None,
+                &[],
             )
             .unwrap();
 
@@ -208,6 +213,7 @@ mod tests {
                 PathBuf::from("/tmp"),
                 &config,
                 None,
+                &[],
             )
             .unwrap();
 
@@ -229,6 +235,7 @@ mod tests {
                 PathBuf::from("/tmp"),
                 &config,
                 None,
+                &[],
             )
             .unwrap();
 
@@ -251,6 +258,7 @@ mod tests {
                 PathBuf::from("/tmp"),
                 &config,
                 None,
+                &[],
             )
             .unwrap();
 
@@ -259,6 +267,7 @@ mod tests {
             PathBuf::from("/tmp"),
             &config,
             None,
+            &[],
         );
 
         assert!(matches!(
@@ -278,6 +287,7 @@ mod tests {
                 PathBuf::from("/tmp"),
                 &config,
                 None,
+                &[],
             )
             .unwrap();
         manager
@@ -286,6 +296,7 @@ mod tests {
                 PathBuf::from("/tmp"),
                 &config,
                 None,
+                &[],
             )
             .unwrap();
 
@@ -306,6 +317,7 @@ mod tests {
                 PathBuf::from("/tmp"),
                 &config,
                 None,
+                &[],
             )
             .unwrap();
         manager
@@ -314,6 +326,7 @@ mod tests {
                 PathBuf::from("/tmp"),
                 &config,
                 None,
+                &[],
             )
             .unwrap();
 
@@ -334,6 +347,7 @@ mod tests {
                 PathBuf::from("/tmp"),
                 &config,
                 None,
+                &[],
             )
             .unwrap();
 
@@ -361,6 +375,7 @@ mod tests {
                 PathBuf::from("/tmp"),
                 &config,
                 None,
+                &[],
             )
             .unwrap();
 
