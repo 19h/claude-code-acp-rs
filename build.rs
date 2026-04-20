@@ -11,6 +11,15 @@ mod bundled_cli {
     use std::path::{Path, PathBuf};
 
     pub fn copy_to_dist() {
+        let host = std::env::var("HOST").ok();
+        let target = std::env::var("TARGET").ok();
+        if host != target {
+            eprintln!(
+                "cargo:warning=Cross-compiling with bundled-cli enabled downloads a host-native Claude CLI. Skipping adjacent CLI packaging; use --no-default-features --features otel,sacp-flush for cross-target builds."
+            );
+            return;
+        }
+
         let manifest_dir = PathBuf::from(
             std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR must be set"),
         );
@@ -24,7 +33,7 @@ mod bundled_cli {
         }
 
         let output_dir = manifest_dir.join("bundled-cli");
-        let cli_name = if cfg!(target_os = "windows") {
+        let cli_name = if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
             "claude.exe"
         } else {
             "claude"

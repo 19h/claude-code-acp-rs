@@ -357,7 +357,7 @@ impl BashTool {
         cmd.wrap(ProcessGroup::leader());
 
         #[cfg(windows)]
-        cmd.wrap(JobObject::new());
+        cmd.wrap(JobObject);
 
         // Spawn the process
         let mut wrapped_child = match cmd.spawn() {

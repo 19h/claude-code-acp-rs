@@ -166,7 +166,7 @@ impl ExternalMcpServer {
 
         #[cfg(windows)]
         {
-            cmd.wrap(JobObject::new());
+            cmd.wrap(JobObject);
         }
 
         // Spawn the wrapped child process
