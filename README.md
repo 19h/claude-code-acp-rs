@@ -38,6 +38,33 @@ cargo install claude-code-acp-rs --features otel
 cargo install --path . --features otel
 ```
 
+## Cross Compilation
+
+Cross-compiling from macOS with plain `cargo build --target ...` will often fail for Linux/Windows targets because Cargo falls back to the host `cc` linker. On macOS that means Apple `ld`, which cannot link ELF/MinGW binaries.
+
+The simplest local solution is `cargo-zigbuild`:
+
+```bash
+brew install zig
+cargo install cargo-zigbuild
+
+# Linux (verified on macOS)
+cargo zigbuild --release \
+  --target x86_64-unknown-linux-musl \
+  --no-default-features \
+  --features otel,sacp-flush
+
+# Windows GNU (verified to Rust compile stage on macOS)
+cargo zigbuild --release \
+  --target x86_64-pc-windows-gnu \
+  --no-default-features \
+  --features otel,sacp-flush
+```
+
+Important: disable the default `bundled-cli` feature for cross builds. That feature downloads the Claude CLI for the build host, not the target platform, so a macOS cross-build would otherwise package a macOS `claude` binary into a Linux/Windows artifact.
+
+If you prefer containerized builds, `cross build --release --target <target>` also works, but it requires a running Docker daemon.
+
 ## Usage
 
 ### Command Line
