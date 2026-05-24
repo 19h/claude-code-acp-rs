@@ -41,6 +41,15 @@ pub struct Cli {
     #[arg(short, long)]
     pub quiet: bool,
 
+    /// Resume an existing session by id (mirrors `claude -r <id>`).
+    ///
+    /// Accepted for compatibility with the wrapper invocation. The actual
+    /// session restoration is driven by the ACP `session/load` request that
+    /// follows the initialize handshake, so this flag is recorded but not
+    /// required by the agent runtime.
+    #[arg(short = 'r', long, value_name = "SESSION_ID")]
+    pub resume: Option<String>,
+
     /// OpenTelemetry OTLP endpoint (e.g., http://localhost:4317)
     /// When otel feature is enabled, this configures the OTLP exporter.
     /// When otel feature is disabled, this argument is accepted but ignored.
@@ -63,6 +72,7 @@ impl Default for Cli {
             log_file: None,
             verbose: 0,
             quiet: false,
+            resume: None,
             otel_endpoint: None,
             otel_service_name: "claude-code-acp-rs".to_string(),
         }

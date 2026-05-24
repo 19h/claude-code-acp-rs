@@ -611,14 +611,20 @@ impl AcpMcpServer {
                     "Sending completion notification"
                 );
 
-                // Prepare content for the notification
-                // For errors, include the error message so Zed can display it
-                let content: Option<Vec<ToolCallContent>> = if result.is_error {
-                    Some(vec![result.content.clone().into()])
-                } else {
-                    // For successful completion, no need to send content
-                    // The tool result will be sent separately via result message
+                // Prepare content for the notification. Always include the result
+                // content (both errors and success), not only errors. The original
+                // logic dropped success content under the assumption that Claude
+                // would forward the tool_result separately via an assistant message
+                // — that's true for clients that consume the assistant stream
+                // directly, but some ACP clients only watch session/update
+                // notifications. Without the content here their UI sees an empty
+                // tool result and can't render any special payload (e.g.
+                // render_visual artifacts get reduced to a generic "Ran MCP: …"
+                // bar with no diagram).
+                let content: Option<Vec<ToolCallContent>> = if result.content.is_empty() {
                     None
+                } else {
+                    Some(vec![result.content.clone().into()])
                 };
 
                 // Send completion notification with content for errors
@@ -1089,7 +1095,7 @@ impl SdkMcpServer for AcpMcpServer {
                 }))
             }
             "tools/list" => {
-                let tools: Vec<_> = self
+                let mut tools: Vec<_> = self
                     .tools
                     .values()
                     .map(|t| {
@@ -1100,10 +1106,28 @@ impl SdkMcpServer for AcpMcpServer {
                         })
                     })
                     .collect();
+                let builtin_count = tools.len();
+
+                // Merge in external MCP tools discovered via `connect_external_mcp_servers`.
+                // Without this, claude CLI only sees built-in tools (Bash/Read/Write/...)
+                // and the external `mcp__<server>__<tool>` entries are invisible — even
+                // though `tools/call` routes them correctly. Symptom: agent says "no
+                // tools from <server> are connected" while the adapter log clearly shows
+                // the connection succeeded.
+                let external_tools = self.mcp_server.external_manager().all_tools();
+                for schema in &external_tools {
+                    tools.push(serde_json::json!({
+                        "name": schema.name,
+                        "description": schema.description,
+                        "inputSchema": schema.input_schema
+                    }));
+                }
 
                 let tool_names: Vec<&str> = self.tools.keys().map(|s| s.as_str()).collect();
                 tracing::info!(
                     tool_count = tools.len(),
+                    builtin_count,
+                    external_count = external_tools.len(),
                     tools = ?tool_names,
                     "Returning tool list"
                 );

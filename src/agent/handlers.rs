@@ -36,8 +36,63 @@ use crate::terminal::TerminalClient;
 use crate::types::{AgentConfig, AgentError, NewSessionMeta};
 
 // Default model constants
-const DEFAULT_MODEL_ID: &str = "claude-sonnet-4-20250514";
-const DEFAULT_MODEL_DISPLAY_NAME: &str = "Default";
+const DEFAULT_MODEL_ID: &str = "claude-opus-4-7";
+
+/// Catalog of Claude models surfaced to ACP clients in availableModels.
+/// Order is the order shown in the picker. Anyone of these can be passed to
+/// `claude --model <id>`. The `[1m]` variants enable the 1M-token context
+/// window where the model supports it.
+const CLAUDE_MODEL_CATALOG: &[(&str, &str, &str)] = &[
+    (
+        "claude-opus-4-7",
+        "Opus 4.7",
+        "Latest Opus (default for new sessions)",
+    ),
+    (
+        "claude-opus-4-7[1m]",
+        "Opus 4.7 (1M)",
+        "Opus 4.7 with the 1M context window",
+    ),
+    ("claude-opus-4-6", "Opus 4.6", "Opus 4.6"),
+    (
+        "claude-opus-4-6[1m]",
+        "Opus 4.6 (1M)",
+        "Opus 4.6 with the 1M context window",
+    ),
+    ("claude-sonnet-4-6", "Sonnet 4.6", "Sonnet 4.6"),
+    ("claude-sonnet-4-5", "Sonnet 4.5", "Sonnet 4.5"),
+    ("claude-haiku-4-5", "Haiku 4.5", "Haiku 4.5 — fastest"),
+];
+
+/// Meta key used to surface the underlying Claude CLI session id back to ACP
+/// clients. Clients that store this value can pass it back as the session id
+/// argument of a later `session/load` to actually resume the conversation.
+const CLAUDE_SESSION_ID_META: &str = "claudeSessionId";
+
+/// Extract the Claude CLI session id from an SDK message, if any.
+fn sdk_message_session_id(message: &claude_code_agent_sdk::Message) -> Option<&str> {
+    use claude_code_agent_sdk::Message;
+    match message {
+        Message::System(sys) => sys.session_id.as_deref(),
+        Message::Result(res) => Some(res.session_id.as_str()),
+        Message::Assistant(asst) => asst.session_id.as_deref(),
+        Message::User(_) | Message::StreamEvent(_) | Message::ControlCancelRequest(_) => None,
+    }
+}
+
+/// Attach the Claude CLI session id to a notification's `_meta` so ACP clients
+/// can capture it on the wire.
+fn attach_claude_session_id_meta(
+    mut notification: SessionNotification,
+    claude_session_id: &str,
+) -> SessionNotification {
+    let mut meta = notification.meta.take().unwrap_or_default();
+    meta.insert(
+        CLAUDE_SESSION_ID_META.to_string(),
+        serde_json::Value::String(claude_session_id.to_string()),
+    );
+    notification.meta(meta)
+}
 
 /// Handle initialize request
 ///
@@ -297,33 +352,37 @@ fn build_available_modes() -> Vec<SessionMode> {
 /// Returns model information including current model and available models.
 /// Dynamically builds the model list based on the currently configured model.
 ///
-/// Priority: config.model > ANTHROPIC_MODEL env var > Default (claude-sonnet-4-20250514)
+/// Priority: config.model > ANTHROPIC_MODEL env var > Default.
 fn build_available_models(config: &AgentConfig) -> SessionModelState {
-    // Get current model from config or environment
-    // Use official default model as fallback
+    // The configured/active model. Falls back to ANTHROPIC_MODEL, then the
+    // default. This is whatever should show selected in the client picker.
     let current_model_id = config
         .model
         .clone()
         .or_else(|| std::env::var("ANTHROPIC_MODEL").ok())
         .unwrap_or_else(|| DEFAULT_MODEL_ID.to_string());
 
-    // Use friendly display name for default model
-    let display_name = if config.model.is_none() && std::env::var("ANTHROPIC_MODEL").is_err() {
-        DEFAULT_MODEL_DISPLAY_NAME.to_string()
-    } else {
-        current_model_id.clone()
-    };
+    // Catalog of all Claude models. We always advertise the full catalog so
+    // ACP clients can render a real picker, regardless of which one is
+    // currently active. The active id is added to the list if it's not
+    // already a catalog member (for custom IDs / env-set models).
+    let mut available_models: Vec<ModelInfo> = CLAUDE_MODEL_CATALOG
+        .iter()
+        .map(|(id, name, description)| {
+            ModelInfo::new((*id).to_string(), (*name).to_string())
+                .description((*description).to_string())
+        })
+        .collect();
 
-    // Build description
-    let description = if display_name == DEFAULT_MODEL_DISPLAY_NAME {
-        format!("Default model ({})", DEFAULT_MODEL_ID)
-    } else {
-        format!("Current model: {}", current_model_id)
-    };
-
-    // Build available models list with the current model
-    let available_models =
-        vec![ModelInfo::new(current_model_id.clone(), display_name).description(description)];
+    if !CLAUDE_MODEL_CATALOG
+        .iter()
+        .any(|(id, _, _)| *id == current_model_id.as_str())
+    {
+        available_models.push(
+            ModelInfo::new(current_model_id.clone(), current_model_id.clone())
+                .description(format!("Custom model: {}", current_model_id)),
+        );
+    }
 
     SessionModelState::new(current_model_id, available_models)
 }
@@ -602,6 +661,25 @@ pub async fn handle_prompt(
                     last_result = Some(result.clone());
                 }
 
+                // Capture the underlying Claude CLI session id (only on first
+                // observation) so we can surface it back to the ACP client
+                // for later `session/load` calls. Without this, the adapter's
+                // synthetic UUID would round-trip as the resume target and
+                // `claude --resume` would fail to find a matching session
+                // on disk.
+                if let Some(sdk_sid) = sdk_message_session_id(&message)
+                    && session.claude_session_id().await.is_none()
+                {
+                    if let Some(captured) = session.capture_claude_session_id(sdk_sid).await {
+                        tracing::info!(
+                            session_id = %session_id,
+                            claude_session_id = %captured,
+                            "Captured underlying Claude CLI session id"
+                        );
+                    }
+                }
+                let claude_sid_for_meta = session.claude_session_id().await;
+
                 // Convert SDK message to ACP notifications
                 let converter = session.converter().await;
                 let notifications = converter.convert_message(&message, session_id);
@@ -611,6 +689,10 @@ pub async fn handle_prompt(
                 // Send each notification
                 for notification in notifications {
                     notification_count += 1;
+                    let notification = match claude_sid_for_meta.as_deref() {
+                        Some(sid) => attach_claude_session_id_meta(notification, sid),
+                        None => notification,
+                    };
                     if let Err(e) = send_notification(&connection_cx, notification) {
                         error_count += 1;
                         tracing::warn!(
@@ -1836,15 +1918,19 @@ mod tests {
         let model_state = build_available_models(&config);
 
         assert_eq!(model_state.current_model_id.0, "glm-4.7".into());
-        assert_eq!(model_state.available_models.len(), 1);
-        assert_eq!(model_state.available_models[0].model_id.0, "glm-4.7".into());
-        assert_eq!(model_state.available_models[0].name, "glm-4.7");
         assert_eq!(
-            model_state.available_models[0]
-                .description
-                .as_ref()
-                .unwrap(),
-            "Current model: glm-4.7"
+            model_state.available_models.len(),
+            CLAUDE_MODEL_CATALOG.len() + 1
+        );
+        let custom_model = model_state
+            .available_models
+            .last()
+            .expect("custom model should be appended");
+        assert_eq!(custom_model.model_id.0, "glm-4.7".into());
+        assert_eq!(custom_model.name, "glm-4.7");
+        assert_eq!(
+            custom_model.description.as_ref().unwrap(),
+            "Custom model: glm-4.7"
         );
     }
 
@@ -1860,8 +1946,18 @@ mod tests {
         let model_state = build_available_models(&config);
 
         assert_eq!(model_state.current_model_id.0, "gpt-4".into());
-        assert_eq!(model_state.available_models.len(), 1);
-        assert_eq!(model_state.available_models[0].name, "gpt-4");
+        assert_eq!(
+            model_state.available_models.len(),
+            CLAUDE_MODEL_CATALOG.len() + 1
+        );
+        assert_eq!(
+            model_state
+                .available_models
+                .last()
+                .expect("env model should be appended")
+                .name,
+            "gpt-4"
+        );
         unsafe { std::env::remove_var("ANTHROPIC_MODEL") };
     }
 
@@ -1877,16 +1973,19 @@ mod tests {
         };
         let model_state = build_available_models(&config);
 
-        // Should use DEFAULT_MODEL_ID internally
+        assert_eq!(model_state.current_model_id.0, DEFAULT_MODEL_ID.into());
         assert_eq!(
-            model_state.current_model_id.0,
-            "claude-sonnet-4-20250514".into()
+            model_state.available_models.len(),
+            CLAUDE_MODEL_CATALOG.len()
         );
-        // But display "Default" as name
-        assert_eq!(model_state.available_models[0].name, "Default");
+        assert_eq!(
+            model_state.available_models[0].model_id.0,
+            DEFAULT_MODEL_ID.into()
+        );
+        assert_eq!(model_state.available_models[0].name, "Opus 4.7");
         assert_eq!(
             model_state.available_models[0].description,
-            Some("Default model (claude-sonnet-4-20250514)".into())
+            Some("Latest Opus (default for new sessions)".into())
         );
     }
 }

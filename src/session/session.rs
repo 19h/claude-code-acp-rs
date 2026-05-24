@@ -163,6 +163,14 @@ pub struct Session {
     /// Set to true when cancel() is called, reset to false at start of new prompt
     /// Used to distinguish user cancellation from execution errors
     cancelled: AtomicBool,
+    /// Underlying Claude CLI session id, observed on the first SDK message that
+    /// carries one (System "init", ResultMessage, etc.). Distinct from the
+    /// adapter-local `session_id` above — that one is a fresh UUID we hand to
+    /// the ACP client, while the SDK session id is what `claude --resume` on
+    /// disk understands. We expose this back to the ACP client as
+    /// `_meta.claudeSessionId` on outbound notifications so callers can
+    /// store and later pass it back via `session/load`.
+    claude_session_id: tokio::sync::Mutex<Option<String>>,
 }
 
 /// Generate a stable cache key from JSON value
@@ -537,6 +545,7 @@ impl Session {
             permission_cache,
             tool_use_id_cache,
             cancelled: AtomicBool::new(false),
+            claude_session_id: tokio::sync::Mutex::new(None),
         };
 
         // Wrap in Arc
@@ -899,6 +908,26 @@ impl Session {
     /// Get the usage tracker
     pub fn usage_tracker(&self) -> &UsageTracker {
         &self.usage_tracker
+    }
+
+    /// Return the underlying Claude CLI session id once observed.
+    pub async fn claude_session_id(&self) -> Option<String> {
+        self.claude_session_id.lock().await.clone()
+    }
+
+    /// Record the Claude CLI session id on first observation. Returns the
+    /// captured id when this call is the one that filled the slot, so callers
+    /// can fire a one-shot notification. Subsequent calls return None.
+    pub async fn capture_claude_session_id(&self, candidate: &str) -> Option<String> {
+        if candidate.is_empty() {
+            return None;
+        }
+        let mut slot = self.claude_session_id.lock().await;
+        if slot.is_none() {
+            *slot = Some(candidate.to_string());
+            return slot.clone();
+        }
+        None
     }
 
     /// Get the notification converter (read-only access)

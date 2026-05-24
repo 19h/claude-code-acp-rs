@@ -743,7 +743,10 @@ mod tests {
         std::fs::write(
             &local_settings_file,
             r#"{
-            "alwaysThinkingEnabled": true
+            "alwaysThinkingEnabled": true,
+            "env": {
+                "MAX_THINKING_TOKENS": ""
+            }
         }"#,
         )
         .ok();
@@ -755,7 +758,10 @@ mod tests {
         std::fs::write(
             &local_settings_file,
             r#"{
-            "alwaysThinkingEnabled": false
+            "alwaysThinkingEnabled": false,
+            "env": {
+                "MAX_THINKING_TOKENS": ""
+            }
         }"#,
         )
         .ok();
@@ -767,7 +773,10 @@ mod tests {
         std::fs::write(
             &local_settings_file,
             r#"{
-            "alwaysThinkingEnabled": true
+            "alwaysThinkingEnabled": true,
+            "env": {
+                "MAX_THINKING_TOKENS": ""
+            }
         }"#,
         )
         .ok();
@@ -785,7 +794,13 @@ mod tests {
         // Explicitly set to false to override any user settings
         std::fs::write(
             &local_settings_file,
-            r#"{"model": "test-model", "alwaysThinkingEnabled": false}"#,
+            r#"{
+            "model": "test-model",
+            "alwaysThinkingEnabled": false,
+            "env": {
+                "MAX_THINKING_TOKENS": ""
+            }
+        }"#,
         )
         .ok();
 

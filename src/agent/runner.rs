@@ -717,6 +717,17 @@ async fn run_acp_server() -> Result<(), sacp::Error> {
                 let config = agent.config().clone();
                 let sessions = agent.sessions().clone();
                 async move |message: Dispatch, connection_cx: ConnectionTo<Client>| {
+                    // Responses to requests WE sent (e.g. session/request_permission,
+                    // fs/read_text_file, terminal/*) get delivered through this
+                    // dispatch hook because they're not paired with an explicit
+                    // on_receive_request handler on the agent side. The catch-all
+                    // below would otherwise turn them into "Unknown method" errors
+                    // and forward THAT to the awaiting future — breaking every
+                    // permission request and tool-call gate.
+                    if let Dispatch::Response(result, router) = message {
+                        return router.respond_with_result(result);
+                    }
+
                     let method = message.method().to_string();
                     let span = tracing::info_span!(
                         "handle_message",

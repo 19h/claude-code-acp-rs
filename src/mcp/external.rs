@@ -882,12 +882,16 @@ impl ExternalMcpManager {
             "MCP server tools available"
         );
 
-        // Cache tool schemas (with server-prefixed names) for lock-free access in all_tools()
+        // Cache tool schemas (with server-prefixed names) for lock-free access in all_tools().
+        // Format is `mcp__<server>__<tool>` (double underscore between server and tool) — this
+        // is what `is_external_tool` parses to route execution back to the external manager.
+        // Using a single underscore here causes `is_external_tool` to fail the split and
+        // execution falls through to the built-in registry which returns "Tool not found".
         let cached_tools: Vec<ToolSchema> = server
             .tools()
             .iter()
             .map(|tool| ToolSchema {
-                name: format!("mcp__{}_{}", name, tool.name),
+                name: format!("mcp__{}__{}", name, tool.name),
                 description: format!("[{}] {}", name, tool.description),
                 input_schema: tool.input_schema.clone(),
             })
