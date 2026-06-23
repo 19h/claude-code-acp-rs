@@ -1322,6 +1322,31 @@ mod tests {
     }
 
     #[test]
+    fn test_build_passthrough_mcp_server_http() {
+        let server = McpServer::Http(
+            sacp::schema::McpServerHttp::new("ida", "http://127.0.0.1:8080/mcp").headers(vec![
+                sacp::schema::HttpHeader::new("Authorization", "Bearer token"),
+            ]),
+        );
+
+        let (name, config) = build_passthrough_mcp_server(&server).unwrap();
+        assert_eq!(name, "ida");
+
+        match config {
+            McpServerConfig::Http(http) => {
+                assert_eq!(http.url, "http://127.0.0.1:8080/mcp");
+                assert_eq!(
+                    http.headers
+                        .as_ref()
+                        .and_then(|headers| headers.get("Authorization")),
+                    Some(&"Bearer token".to_string())
+                );
+            }
+            _ => panic!("expected HTTP MCP config"),
+        }
+    }
+
+    #[test]
     fn test_build_passthrough_mcp_server_sse() {
         let server = McpServer::Sse(
             sacp::schema::McpServerSse::new("ida", "http://127.0.0.1:8080/sse").headers(vec![
