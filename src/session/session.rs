@@ -115,6 +115,54 @@ fn build_passthrough_mcp_server(server: &McpServer) -> Option<(String, McpServer
     }
 }
 
+fn normalize_name_for_mcp(name: &str) -> String {
+    const CLAUDEAI_SERVER_PREFIX: &str = "claude.ai ";
+
+    let normalized: String = name
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+
+    if !name.starts_with(CLAUDEAI_SERVER_PREFIX) {
+        return normalized;
+    }
+
+    let mut collapsed = String::with_capacity(normalized.len());
+    let mut previous_was_underscore = false;
+    for ch in normalized.chars() {
+        if ch == '_' {
+            if !previous_was_underscore {
+                collapsed.push(ch);
+            }
+            previous_was_underscore = true;
+        } else {
+            collapsed.push(ch);
+            previous_was_underscore = false;
+        }
+    }
+
+    collapsed.trim_matches('_').to_string()
+}
+
+fn passthrough_mcp_server_allow_rule(server_name: &str) -> String {
+    format!("mcp__{}", normalize_name_for_mcp(server_name))
+}
+
+fn allow_passthrough_mcp_servers(options: &mut ClaudeAgentOptions, server_names: &[String]) {
+    for server_name in server_names {
+        let rule = passthrough_mcp_server_allow_rule(server_name);
+        if !options.allowed_tools.contains(&rule) {
+            options.allowed_tools.push(rule);
+        }
+    }
+}
+
 /// An active Claude session
 ///
 /// Each session holds its own ClaudeClient instance and maintains
@@ -329,6 +377,7 @@ impl Session {
 
         // Build MCP servers with our ACP server
         let mut mcp_servers_dict = HashMap::new();
+        let mut passthrough_mcp_server_names = Vec::new();
         mcp_servers_dict.insert(
             "acp".to_string(),
             McpServerConfig::Sdk(McpSdkServerConfig {
@@ -355,13 +404,14 @@ impl Session {
                 continue;
             }
 
+            passthrough_mcp_server_names.push(name.clone());
             mcp_servers_dict.insert(name, config);
         }
 
         tracing::info!(
             session_id = %session_id,
             mcp_server_count = mcp_servers_dict.len(),
-            passthrough_count = mcp_servers.len(),
+            passthrough_count = passthrough_mcp_server_names.len(),
             "MCP servers configured"
         );
 
@@ -434,6 +484,7 @@ impl Session {
         // This disables CLI's built-in tools and enables our MCP tools with mcp__acp__ prefix
         let acp_tools = get_acp_replacement_tools();
         options.use_acp_tools(&acp_tools);
+        allow_passthrough_mcp_servers(&mut options, &passthrough_mcp_server_names);
 
         // Enable streaming to receive incremental content updates
         // This allows SDK to send StreamEvent messages with content_block_delta
@@ -442,6 +493,7 @@ impl Session {
         tracing::debug!(
             session_id = %session_id,
             acp_tools = ?acp_tools,
+            passthrough_mcp_servers = ?passthrough_mcp_server_names,
             disallowed_tools = ?options.disallowed_tools,
             allowed_tools = ?options.allowed_tools,
             "ACP tools configured"
@@ -1396,6 +1448,54 @@ mod tests {
             }
             _ => panic!("expected stdio MCP config"),
         }
+    }
+
+    #[test]
+    fn test_passthrough_mcp_server_allow_rule_matches_claude_normalization() {
+        assert_eq!(passthrough_mcp_server_allow_rule("ida"), "mcp__ida");
+        assert_eq!(
+            passthrough_mcp_server_allow_rule("ida.local server"),
+            "mcp__ida_local_server"
+        );
+        assert_eq!(
+            passthrough_mcp_server_allow_rule("context-7_server"),
+            "mcp__context-7_server"
+        );
+        assert_eq!(
+            passthrough_mcp_server_allow_rule("claude.ai  my.server "),
+            "mcp__claude_ai_my_server"
+        );
+    }
+
+    #[test]
+    fn test_allow_passthrough_mcp_servers_extends_acp_allowlist() {
+        let mut options = ClaudeAgentOptions::builder().build();
+        let acp_tools = get_acp_replacement_tools();
+        options.use_acp_tools(&acp_tools);
+
+        allow_passthrough_mcp_servers(
+            &mut options,
+            &["ida".to_string(), "ida.local server".to_string()],
+        );
+
+        assert!(
+            options
+                .allowed_tools
+                .contains(&"mcp__acp__Read".to_string())
+        );
+        assert!(
+            options
+                .allowed_tools
+                .contains(&"mcp__acp__Bash".to_string())
+        );
+        assert!(options.allowed_tools.contains(&"mcp__ida".to_string()));
+        assert!(
+            options
+                .allowed_tools
+                .contains(&"mcp__ida_local_server".to_string())
+        );
+        assert!(options.disallowed_tools.contains(&"Read".to_string()));
+        assert!(options.disallowed_tools.contains(&"Bash".to_string()));
     }
 
     /// Test Session::cleanup() with no processes
