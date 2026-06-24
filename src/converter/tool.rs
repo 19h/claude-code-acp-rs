@@ -288,9 +288,21 @@ pub fn extract_tool_info(name: &str, input: &serde_json::Value, cwd: Option<&Pat
         // MCP tools (format: mcp__server__tool)
         // Note: mcp__acp__* tools are already handled above via strip_acp_prefix
         name if name.starts_with("mcp__") && !name.starts_with(ACP_TOOL_PREFIX) => {
-            let parts: Vec<&str> = name.split("__").collect();
-            let tool_name = parts.get(2).unwrap_or(&name);
-            ToolInfo::new(format!("MCP: {tool_name}"), ToolKind::Other)
+            let parts: Vec<&str> = name.splitn(3, "__").collect();
+            let server_name = parts.get(1).copied().unwrap_or("");
+            let tool_name = parts.get(2).copied().unwrap_or(name);
+            let title = if server_name == "ida" {
+                // KVASIR's IDA MCP tools are the same operations exposed by
+                // its native agent. Surface the native tool name so the host UI
+                // hits the same family-aware renderer instead of the generic
+                // external-MCP presentation.
+                tool_name.to_string()
+            } else if server_name.is_empty() {
+                tool_name.to_string()
+            } else {
+                format!("{server_name}: {tool_name}")
+            };
+            ToolInfo::new(title, ToolKind::Other)
         }
 
         // Default case
@@ -440,6 +452,17 @@ mod tests {
 
         assert_eq!(info.kind, ToolKind::Other);
         assert!(info.title.contains("custom_tool"));
+        assert!(!info.title.contains("MCP"));
+    }
+
+    #[test]
+    fn test_extract_ida_mcp_tool_info_uses_native_title() {
+        let input = json!({});
+        let info = extract_tool_info("mcp__ida__get_call_graph", &input, None);
+
+        assert_eq!(info.kind, ToolKind::Other);
+        assert_eq!(info.title, "get_call_graph");
+        assert!(!info.title.contains("MCP"));
     }
 
     #[test]
