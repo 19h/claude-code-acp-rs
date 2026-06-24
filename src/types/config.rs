@@ -2,6 +2,8 @@
 
 use std::collections::HashMap;
 
+const DISABLE_TOOL_SEARCH_ENV_VALUE: &str = "auto:100";
+
 /// Agent configuration loaded from environment variables and settings files
 ///
 /// Configuration priority (highest to lowest):
@@ -373,6 +375,14 @@ impl AgentConfig {
             options.env = env_vars;
         }
 
+        // Claude Code defaults to its internal ToolSearch auto mode when
+        // deferred MCP tools are present. Kvasir supplies the IDA MCP surface
+        // directly, so keep ToolSearch disabled inside the spawned CLI.
+        options.env.insert(
+            "ENABLE_TOOL_SEARCH".to_string(),
+            DISABLE_TOOL_SEARCH_ENV_VALUE.to_string(),
+        );
+
         // Log the applied configuration
         tracing::debug!(
             model = ?self.model,
@@ -458,6 +468,19 @@ mod tests {
         assert_eq!(env.get("ANTHROPIC_API_KEY").unwrap(), "secret-key");
         assert_eq!(env.get("ANTHROPIC_MODEL").unwrap(), "claude-3");
         assert!(!env.contains_key("ANTHROPIC_SMALL_FAST_MODEL"));
+    }
+
+    #[test]
+    fn test_apply_to_options_disables_tool_search() {
+        let config = AgentConfig::default();
+        let mut options = claude_code_agent_sdk::ClaudeAgentOptions::builder().build();
+
+        config.apply_to_options(&mut options);
+
+        assert_eq!(
+            options.env.get("ENABLE_TOOL_SEARCH").map(String::as_str),
+            Some(DISABLE_TOOL_SEARCH_ENV_VALUE)
+        );
     }
 
     #[test]

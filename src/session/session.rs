@@ -42,6 +42,8 @@ use super::background_processes::BackgroundTerminal;
 use super::permission::{PermissionHandler, PermissionMode};
 use super::usage::UsageTracker;
 
+const CLAUDE_TOOL_SEARCH_TOOL: &str = "ToolSearch";
+
 /// Get the list of tools that should be replaced by ACP MCP server tools.
 ///
 /// Only tools that interact with the terminal or filesystem should be replaced:
@@ -160,6 +162,13 @@ fn allow_passthrough_mcp_servers(options: &mut ClaudeAgentOptions, server_names:
         if !options.allowed_tools.contains(&rule) {
             options.allowed_tools.push(rule);
         }
+    }
+}
+
+fn disallow_claude_tool_search(options: &mut ClaudeAgentOptions) {
+    let rule = CLAUDE_TOOL_SEARCH_TOOL.to_string();
+    if !options.disallowed_tools.contains(&rule) {
+        options.disallowed_tools.push(rule);
     }
 }
 
@@ -484,6 +493,7 @@ impl Session {
         // This disables CLI's built-in tools and enables our MCP tools with mcp__acp__ prefix
         let acp_tools = get_acp_replacement_tools();
         options.use_acp_tools(&acp_tools);
+        disallow_claude_tool_search(&mut options);
         allow_passthrough_mcp_servers(&mut options, &passthrough_mcp_server_names);
 
         // Enable streaming to receive incremental content updates
@@ -1472,6 +1482,7 @@ mod tests {
         let mut options = ClaudeAgentOptions::builder().build();
         let acp_tools = get_acp_replacement_tools();
         options.use_acp_tools(&acp_tools);
+        disallow_claude_tool_search(&mut options);
 
         allow_passthrough_mcp_servers(
             &mut options,
@@ -1496,6 +1507,28 @@ mod tests {
         );
         assert!(options.disallowed_tools.contains(&"Read".to_string()));
         assert!(options.disallowed_tools.contains(&"Bash".to_string()));
+        assert!(
+            options
+                .disallowed_tools
+                .contains(&CLAUDE_TOOL_SEARCH_TOOL.to_string())
+        );
+    }
+
+    #[test]
+    fn test_disallow_claude_tool_search_is_idempotent() {
+        let mut options = ClaudeAgentOptions::builder().build();
+
+        disallow_claude_tool_search(&mut options);
+        disallow_claude_tool_search(&mut options);
+
+        assert_eq!(
+            options
+                .disallowed_tools
+                .iter()
+                .filter(|tool| tool.as_str() == CLAUDE_TOOL_SEARCH_TOOL)
+                .count(),
+            1
+        );
     }
 
     /// Test Session::cleanup() with no processes
